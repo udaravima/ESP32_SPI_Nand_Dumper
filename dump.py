@@ -19,11 +19,11 @@ import datetime
 
 # ============ CONFIGURATION ============
 # Update ESP32_IP after flashing — it will be printed in the Serial Monitor
-ESP32_IP = '192.168.55.155'   # <-- UPDATE THIS
+ESP32_IP = '10.238.136.57'   # <-- UPDATE THIS
 TCP_PORT = 3333
 
-PAGE_SIZE = 2112
-TOTAL_PAGES = 1024 * 64
+PAGE_SIZE = 2176
+TOTAL_PAGES = 2048 * 64
 TOTAL_BYTES = TOTAL_PAGES * PAGE_SIZE
 OUTPUT_FILE = 'target/ds35_raw_dump_' + datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + '.bin'
 PROGRESS_INTERVAL = 1024  # Print progress every N pages

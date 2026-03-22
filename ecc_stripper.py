@@ -17,8 +17,8 @@ Output: ds35_clean_firmware.bin (clean, mountable image)
 """
 import os
 
-INPUT_FILE = 'ds35_raw_dump.bin'
-OUTPUT_FILE = 'ds35_clean_firmware.bin'
+INPUT_FILE = 'target/5th_comp.bin'
+OUTPUT_FILE = 'target/5th_comp_clean.bin'
 
 PAGE_SIZE_RAW = 2112
 PAGE_SIZE_CLEAN = 2048

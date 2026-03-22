@@ -6,9 +6,10 @@
 #include "driver/spi_master.h"
 
 // ============ NAND Geometry ============
-#define NAND_PAGE_SIZE       2112   // 2048 main + 64 spare
+// #define NAND_PAGE_SIZE       2112   // 2048 main + 64 spare
+#define NAND_PAGE_SIZE 2176 // 2048 main + 128 spare
 #define NAND_PAGES_PER_BLOCK 64
-#define NAND_TOTAL_BLOCKS    1024
+#define NAND_TOTAL_BLOCKS    2048
 #define NAND_TOTAL_PAGES     (NAND_TOTAL_BLOCKS * NAND_PAGES_PER_BLOCK)
 #define NAND_TOTAL_BYTES     ((uint32_t)NAND_TOTAL_PAGES * NAND_PAGE_SIZE)
 

@@ -1,14 +1,16 @@
 # ESP32 SPI NAND Dumper
 
-A modular ESP32-based tool for extracting firmware from SPI NAND flash chips over WiFi. Supports **Quad SPI (x4)** for high-speed reads and includes automatic read verification for signal integrity.
+A modular ESP32-based tool for extracting firmware from SPI NAND flash chips over WiFi. Supports **Quad SPI (x4)** for high-speed reads, **interactive serial configuration** (no reflashing for parameter changes), and automatic read verification for signal integrity.
 
 Built for the **DS35x1GA** series SPI NAND (FORESEE/DoSilicon), but adaptable to other SPI NAND chips with similar command sets (Winbond W25N, GigaDevice GD5F, etc.)
 
 ## Features
 
+- **Interactive serial config menu** — change WiFi, SPI clock, read mode at boot without reflashing
 - **Quad SPI (x4) reads** — 4x data throughput vs standard single-line SPI
 - **WiFi TCP streaming** — no more fragile serial UART; reliable TCP flow control
 - **Read verification** — each page read twice and compared; auto-retries on mismatch
+- **Multi-dump comparison & repair** — majority-vote tool to fix transmission errors across multiple dumps
 - **Modular architecture** — NAND driver, WiFi transport, and command logic are cleanly separated
 - **ECC status checking** — read the NAND's internal ECC status after each page
 - **Bad block detection** — post-processing script identifies and handles bad blocks
@@ -44,13 +46,15 @@ Built for the **DS35x1GA** series SPI NAND (FORESEE/DoSilicon), but adaptable to
 
 ```
 ├── src/
-│   ├── main.cpp            # Configuration & dump command orchestration
+│   ├── main.cpp            # Interactive config menu & dump orchestration
 │   ├── nand_driver.h       # NAND SPI driver API
 │   ├── nand_driver.cpp     # NAND SPI implementation (single + quad)
 │   ├── wifi_transport.h    # WiFi TCP transport API
 │   └── wifi_transport.cpp  # WiFi TCP implementation
 ├── dump.py                 # PC-side: receives dump over TCP, saves to file
 ├── ecc_stripper.py         # Post-processing: strips OOB/spare, handles bad blocks
+├── tools/
+│   └── binary_compare_fix.py  # Compare multiple dumps & fix via majority voting
 ├── docs/
 │   ├── DS35x1GAxxx_SPI_NAND.pdf   # NAND datasheet
 │   └── esp32-wroom-32e_*.pdf      # ESP32 datasheet
@@ -60,39 +64,48 @@ Built for the **DS35x1GA** series SPI NAND (FORESEE/DoSilicon), but adaptable to
 
 ## Quick Start
 
-### 1. Configure WiFi Credentials
-
-Edit `src/main.cpp`:
-```cpp
-const char* WIFI_SSID = "YOUR_SSID";
-const char* WIFI_PASS = "YOUR_PASSWORD";
-```
-
-### 2. Build & Flash
+### 1. Build & Flash
 
 ```bash
 pio run --target upload
 ```
 
-### 3. Get the ESP32's IP Address
+### 2. Configure via Serial Menu
 
+Open the serial monitor:
 ```bash
 pio device monitor -b 115200
 ```
 
-You'll see output like:
+You'll see the interactive config menu:
 ```
-[*] ESP32 SPI NAND Dumper v2.0
-[*] SPI clock: 5000000 Hz (Quad x4 mode)
-[*] NAND ID: 0xE571 (Mfr: 0xE5, Dev: 0x71)
-[+] Connected! IP: 192.168.1.42
-[*] TCP server on port 3333
-[*] Waiting for client...
+========================================
+  ESP32 SPI NAND Dumper v2.1 — Config
+========================================
+  [1] WiFi SSID:      GAE
+  [2] WiFi Password:  o*********!
+  [3] TCP Port:       3333
+  [4] SPI Clock (Hz): 1000000
+  [5] Read Mode:      Single x1
+  [6] Verify Reads:   ON
+  [7] Max Retries:    5
+  ----------------------------------------
+  [S] START dump with above settings
+========================================
+  Select>
 ```
 
-### 4. Update the PC Script & Run
+- Type `1`–`7` to change a parameter, then enter the new value
+- SPI Clock (option `4`) offers presets: 1/5/10/20/40 MHz or custom Hz
+- Options `5` and `6` toggle on each press
+- Press **S** to start the dump with the displayed settings
 
-Edit `dump.py` with the IP shown in the serial monitor:
+> [!TIP]
+> No need to reflash to change WiFi or SPI settings — just reset the ESP32 and reconfigure from the menu.
+
+### 3. Run the PC-side Receiver
+
+Edit `dump.py` with the IP shown in the serial monitor after WiFi connects:
 ```python
 ESP32_IP = '192.168.1.42'  # <-- paste IP from serial monitor
 ```
@@ -102,26 +115,39 @@ Run the dump (from a separate terminal):
 python3 dump.py
 ```
 
-### 5. Post-Process the Dump
+### 4. Post-Process the Dump
 
-Strip the 64-byte OOB/spare area from each page and handle bad blocks:
+Strip the OOB/spare area from each page and handle bad blocks:
 ```bash
 python3 ecc_stripper.py
 ```
 
-This converts the raw 2112-byte/page dump into a clean 2048-byte/page firmware image.
+This converts the raw dump into a clean 2048-byte/page firmware image.
+
+### 5. (Optional) Compare & Repair Multiple Dumps
+
+If you have multiple dumps of the same chip, use the comparison tool to fix transmission errors via majority voting:
+```bash
+python3 tools/binary_compare_fix.py target/dump1.bin target/dump2.bin target/dump3.bin
+```
+
+This generates a corrected binary and a detailed report showing every byte that disagreed.
 
 ## Configuration Options
 
-All configuration is in `src/main.cpp`:
+All options are configurable at boot via the serial menu (no reflashing required):
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `SPI_CLOCK_HZ` | `5000000` | SPI bus speed in Hz. Lower if you see read errors. |
-| `READ_MODE` | `NAND_READ_QUAD` | `NAND_READ_QUAD` for x4, `NAND_READ_SINGLE` for x1 |
-| `VERIFY_READS` | `true` | Read each page twice and compare |
-| `MAX_RETRIES` | `5` | Max retry attempts on verification mismatch |
-| `TCP_PORT` | `3333` | TCP server port |
+| WiFi SSID | `GAE` | WiFi network name |
+| WiFi Password | `****` | WiFi password |
+| TCP Port | `3333` | TCP server port for data streaming |
+| SPI Clock | `1000000` (1 MHz) | SPI bus speed in Hz. Lower if you see read errors. |
+| Read Mode | `Single x1` | `Single x1` or `Quad x4` (requires all 4 data lines) |
+| Verify Reads | `ON` | Read each page twice and compare |
+| Max Retries | `5` | Max retry attempts on verification mismatch |
+
+Default values can be changed by editing the `cfg_*` variables at the top of `src/main.cpp`.
 
 ## NAND Driver API
 
@@ -173,14 +199,14 @@ void cmd_scan_bad_blocks() {
 }
 ```
 
-## NAND Chip Details (DS35Q1GA)
+## NAND Chip Details (DS35Q2GA)
 
 | Parameter | Value |
 |-----------|-------|
-| Capacity | 1 Gbit (128 MB) |
-| Page Size | 2048 + 64 spare = 2112 bytes |
-| Block Size | 64 pages = 132 KB |
-| Total Blocks | 1024 |
+| Capacity | 2 Gbit (256 MB) |
+| Page Size | 2048 + 128 spare = 2176 bytes |
+| Block Size | 64 pages = 136 KB |
+| Total Blocks | 2048 |
 | SPI Modes | x1, x2, x4 |
 | Max Clock | 104 MHz |
 | Internal ECC | 4-bit per 512-byte sector |
@@ -209,17 +235,18 @@ void cmd_scan_bad_blocks() {
 ## Troubleshooting
 
 ### Read verification mismatches (retries > 0)
-- **Lower `SPI_CLOCK_HZ`** — try 1 MHz for noisy setups
+- **Lower SPI Clock** — select 1 MHz from the config menu for noisy setups
 - **Shorten wires** — long breadboard wires degrade signals
 - **Add decoupling capacitor** — 100nF between VCC and GND near the NAND chip
+- **Take multiple dumps** — use `tools/binary_compare_fix.py` to fix errors via majority voting
 
 ### WiFi connection fails
-- Verify SSID/password in `main.cpp`
+- Check SSID/password in the serial config menu
 - Ensure the ESP32 is within WiFi range
 - Check serial monitor for connection status
 
 ### Dump size mismatch
-- Expected: 138,412,032 bytes (132 MB raw with spare)
+- Expected: 286,261,248 bytes (273 MB raw with spare) for DS35Q2GA
 - If short: check serial monitor for error messages
 - Verify NAND chip is properly connected and powered
 
