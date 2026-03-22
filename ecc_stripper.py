@@ -1,3 +1,20 @@
+"""
+ESP32 SPI NAND Dumper — ECC / OOB Stripper.
+
+Post-processes a raw NAND dump (2112 bytes/page) into a clean
+firmware image (2048 bytes/page) by stripping the 64-byte
+OOB/spare area from each page.
+
+Bad blocks are detected by checking the first byte of the spare
+area in each block's first page. Bad block pages are replaced
+with 0xFF padding to preserve filesystem alignment.
+
+Usage:
+    python3 ecc_stripper.py
+
+Input:  ds35_raw_dump.bin       (raw dump from dump.py)
+Output: ds35_clean_firmware.bin (clean, mountable image)
+"""
 import os
 
 INPUT_FILE = 'ds35_raw_dump.bin'

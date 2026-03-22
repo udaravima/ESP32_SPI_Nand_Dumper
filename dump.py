@@ -1,3 +1,17 @@
+"""
+ESP32 SPI NAND Dumper — PC-side TCP receiver.
+
+Connects to the ESP32 over WiFi TCP, sends a 'GO' trigger,
+and streams the raw NAND dump (2112 bytes/page including spare)
+to a timestamped binary file in target/.
+
+Usage:
+    python3 dump.py
+
+Configuration:
+    ESP32_IP  — set to the IP shown in the ESP32 serial monitor
+    TCP_PORT  — must match the ESP32 firmware (default 3333)
+"""
 import socket
 import time
 import sys
