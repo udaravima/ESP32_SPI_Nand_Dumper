@@ -1,6 +1,7 @@
 import serial
 import time
 import sys
+import datetime
 
 # Configuration - Update port as needed
 PORT = '/dev/ttyUSB0' 
@@ -8,7 +9,7 @@ BAUD = 2000000
 PAGE_SIZE = 2112
 TOTAL_PAGES = 1024 * 64
 TOTAL_BYTES = TOTAL_PAGES * PAGE_SIZE
-OUTPUT_FILE = 'ds35_raw_dump.bin'
+OUTPUT_FILE = 'target/ds35_raw_dump' + datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + '.bin'
 PROGRESS_INTERVAL = 1024  # Print progress every N pages
 
 print(f"[*] Opening {PORT} at {BAUD} baud...")

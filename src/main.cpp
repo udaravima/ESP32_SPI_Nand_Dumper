@@ -51,7 +51,7 @@ void setup() {
 
       // STEP B: Read from Cache to ESP32 (03h) [cite: 368]
       digitalWrite(CS_PIN, LOW);
-      SPI.transfer(0x03); // READ FROM CACHE command
+      SPI.transfer(0x0b); // READ FROM CACHE command
       SPI.transfer(0x00); // Dummy bits + Upper Col Address (000h) [cite: 462-466]
       SPI.transfer(0x00); // Lower Col Address
       SPI.transfer(0x00); // 1 Dummy byte required for 03h [cite: 465]
