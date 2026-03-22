@@ -7,8 +7,8 @@ const char* WIFI_SSID = "HOPE_Insider";
 const char* WIFI_PASS = "bnb9ebn8iFF";
 const uint16_t TCP_PORT = 3333;
 
-#define SPI_CLOCK_HZ    5000000       // 5 MHz
-#define READ_MODE       NAND_READ_QUAD
+#define SPI_CLOCK_HZ    10000000       // 10 MHz
+#define READ_MODE       NAND_READ_SINGLE
 #define VERIFY_READS    true
 #define MAX_RETRIES     5
 // =======================================
