@@ -24,6 +24,16 @@ String read_serial_line() {
       char c = Serial.read();
       if (c == '\n' || c == '\r') {
         Serial.println();  // echo newline
+        // Drain any trailing \r or \n (handles \r\n, \n\r, etc.)
+        delay(5);
+        while (Serial.available()) {
+          char next = Serial.peek();
+          if (next == '\r' || next == '\n') {
+            Serial.read();  // consume it
+          } else {
+            break;
+          }
+        }
         break;
       } else if (c == 127 || c == 8) {  // backspace
         if (line.length() > 0) {
