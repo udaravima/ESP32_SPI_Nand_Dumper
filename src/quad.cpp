@@ -126,6 +126,13 @@ void app_main(void) {
 
             // STEP C: Blast to PC via UART
             uart_write_bytes(UART_NUM_0, (const char*)page_buffer, PAGE_SIZE);
+            uart_wait_tx_done(UART_NUM_0, pdMS_TO_TICKS(1000)); // Ensure TX completes
+
+            // STEP D: Wait for ACK from PC before sending next page
+            uint8_t ack = 0;
+            while (ack != 'A') {
+                uart_read_bytes(UART_NUM_0, &ack, 1, pdMS_TO_TICKS(5000));
+            }
         }
     }
 }

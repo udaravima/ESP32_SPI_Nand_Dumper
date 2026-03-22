@@ -64,6 +64,10 @@ void setup() {
 
       // STEP C: Blast the buffer over Serial to the PC
       Serial.write(pageBuffer, PAGE_SIZE);
+      Serial.flush(); // Ensure all bytes are transmitted before waiting
+
+      // STEP D: Wait for ACK from PC before sending next page
+      while (Serial.read() != 'A') { }
     }
   }
 }

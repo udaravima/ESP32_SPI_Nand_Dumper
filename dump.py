@@ -9,7 +9,7 @@ BAUD = 2000000
 PAGE_SIZE = 2112
 TOTAL_PAGES = 1024 * 64
 TOTAL_BYTES = TOTAL_PAGES * PAGE_SIZE
-OUTPUT_FILE = 'target/ds35_raw_dump' + datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + '.bin'
+OUTPUT_FILE = 'target/ds35_raw_dump_' + datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + '.bin'
 PROGRESS_INTERVAL = 1024  # Print progress every N pages
 
 print(f"[*] Opening {PORT} at {BAUD} baud...")
@@ -37,9 +37,8 @@ try:
 
     with open(OUTPUT_FILE, 'wb') as f:
         while bytes_received < TOTAL_BYTES:
-            remaining = TOTAL_BYTES - bytes_received
-            to_read = min(PAGE_SIZE, remaining)
-            chunk = ser.read(to_read)
+            # Read exactly one full page
+            chunk = ser.read(PAGE_SIZE)
             if not chunk:
                 print("\n[!] Serial timeout! ESP32 stopped sending.")
                 break
@@ -47,7 +46,10 @@ try:
             f.write(chunk)
             bytes_received += len(chunk)
 
-            # Progress bar based on page count (works with partial reads)
+            # ACK this page — ESP32 will not send next page until it gets this
+            ser.write(b'A')
+
+            # Progress bar based on page count
             current_page = bytes_received // PAGE_SIZE
             if current_page // PROGRESS_INTERVAL > last_progress_page // PROGRESS_INTERVAL:
                 last_progress_page = current_page
