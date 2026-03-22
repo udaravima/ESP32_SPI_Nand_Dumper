@@ -132,24 +132,24 @@ void nand_read_cache(uint8_t *buf, int len) {
   }
 }
 
-bool nand_read_page_verified(uint16_t row_addr, uint8_t *buf,
+bool nand_read_page_verified(uint16_t row_addr, uint8_t *buf, int page_size,
                               int max_retries, uint32_t *retry_count) {
   nand_page_read_to_cache(row_addr);
   nand_wait_ready();
-  nand_read_cache(buf, NAND_PAGE_SIZE);
+  nand_read_cache(buf, page_size);
 
   for (int attempt = 0; attempt < max_retries; attempt++) {
     // Re-read from cache — no PAGE READ needed, cache is still loaded
-    nand_read_cache(s_verify_buf, NAND_PAGE_SIZE);
+    nand_read_cache(s_verify_buf, page_size);
 
-    if (memcmp(buf, s_verify_buf, NAND_PAGE_SIZE) == 0) {
+    if (memcmp(buf, s_verify_buf, page_size) == 0) {
       return true;  // Verified
     }
 
     if (retry_count) (*retry_count)++;
     Serial.printf("[!] SPI mismatch at row 0x%04X (retry %d)\n",
                   row_addr, attempt + 1);
-    memcpy(buf, s_verify_buf, NAND_PAGE_SIZE);
+    memcpy(buf, s_verify_buf, page_size);
   }
   return false;  // Failed after retries
 }

@@ -95,7 +95,7 @@ void nand_read_cache_quad(uint8_t *buf, int len);
 
 // Read a full page with automatic verify-retry
 // Returns true if verified, false if still mismatched after max_retries
-bool nand_read_page_verified(uint16_t row_addr, uint8_t *buf,
+bool nand_read_page_verified(uint16_t row_addr, uint8_t *buf, int page_size,
                              int max_retries, uint32_t *retry_count);
 
 // Get the current read mode
