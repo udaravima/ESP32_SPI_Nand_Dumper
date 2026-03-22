@@ -67,7 +67,9 @@ void setup() {
       Serial.flush(); // Ensure all bytes are transmitted before waiting
 
       // STEP D: Wait for ACK from PC before sending next page
-      while (Serial.read() != 'A') { }
+      while (true) {
+        if (Serial.available() > 0 && Serial.read() == 'A') break;
+      }
     }
   }
 }

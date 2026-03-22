@@ -37,14 +37,25 @@ try:
 
     with open(OUTPUT_FILE, 'wb') as f:
         while bytes_received < TOTAL_BYTES:
-            # Read exactly one full page
-            chunk = ser.read(PAGE_SIZE)
-            if not chunk:
-                print("\n[!] Serial timeout! ESP32 stopped sending.")
+            # Read exactly one full page (loop until we have all PAGE_SIZE bytes)
+            page_data = b''
+            while len(page_data) < PAGE_SIZE:
+                remaining = PAGE_SIZE - len(page_data)
+                chunk = ser.read(remaining)
+                if not chunk:
+                    print("\n[!] Serial timeout! ESP32 stopped sending.")
+                    break
+                page_data += chunk
+
+            if len(page_data) < PAGE_SIZE:
+                # Partial page at timeout — write what we have but don't ACK
+                if page_data:
+                    f.write(page_data)
+                    bytes_received += len(page_data)
                 break
 
-            f.write(chunk)
-            bytes_received += len(chunk)
+            f.write(page_data)
+            bytes_received += PAGE_SIZE
 
             # ACK this page — ESP32 will not send next page until it gets this
             ser.write(b'A')
