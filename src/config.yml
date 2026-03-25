@@ -1,0 +1,31 @@
+PIN_CONFIGURATION:
+  SOP_8_PACKAGE_1:
+  CLK: 6
+  SI: 5
+  SO: 2
+  CS#: 1
+  WP#: 3
+  HOLD#: 7
+  VCC: 8
+  VSS: 4
+
+SOP_16_PACKAGE_1:
+  CLK: 16
+  SI: 15
+  SO: 8
+  CS#: 7
+  WP#: 9
+  HOLD#: 1
+  VCC: 2
+  VSS: 10
+
+CHIP_CONFIGURATION:
+  DS35x1GAxxx:
+    size: 1G
+    package: SOP_8
+    pin_configuration: SOP_8_PACKAGE_1
+    page_size: 2112
+    pages_per_block: 64
+    spare_size: 64
+    blocks_per_plane: 1024
+    planes: 1
