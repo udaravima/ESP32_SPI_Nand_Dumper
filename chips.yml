@@ -1,0 +1,28 @@
+# NAND chip registry. Add your chip here, run `pio run`, open a PR.
+# See CONTRIBUTING.md for how to read the JEDEC id off the serial log.
+chips:
+  MT29F2G01ABAGD:
+    mfr_id:  0x2C
+    dev_id:  0x24
+    page_size:       2176    # total bytes/page (main + spare)
+    spare_size:      128
+    pages_per_block: 64
+    total_blocks:    2048
+    bad_block_mark:  0x00
+    has_qe_bit:      false    # Micron: quad needs no enable bit
+    ecc_default:     off      # global policy is off/raw
+    vcc_mv:          3300
+    notes: "2Gb SLC, 8-bit/512 on-die ECC, 2 planes x 1024 blocks"
+
+  DS35Q1GA:
+    mfr_id:  0xE5             # PLACEHOLDER - confirm from 9Fh / DS35 datasheet
+    dev_id:  0x71             # PLACEHOLDER - confirm from silicon
+    page_size:       2112
+    spare_size:      64
+    pages_per_block: 64
+    total_blocks:    1024
+    bad_block_mark:  0x00
+    has_qe_bit:      false
+    ecc_default:     off
+    vcc_mv:          3300
+    notes: "1Gb SLC (FORESEE/DoSilicon)"
