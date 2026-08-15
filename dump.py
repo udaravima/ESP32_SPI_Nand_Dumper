@@ -15,6 +15,7 @@ import zlib
 import json
 import time
 import sys
+import os
 import datetime
 
 # ============ CONFIGURATION ============
@@ -68,6 +69,7 @@ def write_metadata(out_path, geom, byte_count):
 def main():
     out_file = ('target/nand_raw_dump_'
                 + datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + '.bin')
+    os.makedirs(os.path.dirname(out_file) or '.', exist_ok=True)
 
     print(f"[*] Connecting to ESP32 at {ESP32_IP}:{TCP_PORT}...")
     try:
