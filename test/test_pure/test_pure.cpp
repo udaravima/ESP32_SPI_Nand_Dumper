@@ -1,6 +1,8 @@
 #include <unity.h>
+#include <string.h>
 #include "nand_chips.h"
 #include "nand_addr.h"
+#include "dump_header.h"
 
 void test_lookup_finds_micron(void) {
   const nand_chip_t *c = nand_chip_lookup(0x2C, 0x24);
@@ -29,6 +31,26 @@ void test_row_addr_masks_page_field(void) {
   TEST_ASSERT_EQUAL_UINT32((5u << 6) | 3u, nand_row_addr(5, 3, 6));
 }
 
+void test_header_pack_layout_and_crc(void) {
+  dump_geometry_t g = {0};
+  g.page_size = 2176; g.spare_size = 128; g.pages_per_block = 64;
+  g.total_blocks = 2048; g.total_pages = 2048u * 64u;
+  g.total_bytes = 2048u * 64u * 2176u;
+  g.mfr_id = 0x2C; g.dev_id = 0x24; g.page_addr_bits = 6;
+  g.flags = 0x00; // ecc off, single, no verify
+
+  uint8_t buf[32];
+  dump_header_pack(buf, &g);
+
+  TEST_ASSERT_EQUAL_UINT8_ARRAY("NANDMP", buf, 6);
+  TEST_ASSERT_EQUAL_UINT8(1, buf[6]);                       // proto version
+  TEST_ASSERT_EQUAL_UINT16(2176, buf[8] | (buf[9] << 8));   // page_size LE
+  // CRC over bytes 0..27 lands in bytes 28..31
+  uint32_t crc = dump_crc32(buf, 28);
+  uint32_t stored = buf[28] | (buf[29] << 8) | (buf[30] << 16) | ((uint32_t)buf[31] << 24);
+  TEST_ASSERT_EQUAL_UINT32(crc, stored);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_lookup_finds_micron);
@@ -36,5 +58,6 @@ int main(int, char **) {
   RUN_TEST(test_row_addr_block1024_does_not_alias_zero);
   RUN_TEST(test_row_addr_last_page_of_2gbit);
   RUN_TEST(test_row_addr_masks_page_field);
+  RUN_TEST(test_header_pack_layout_and_crc);
   return UNITY_END();
 }
