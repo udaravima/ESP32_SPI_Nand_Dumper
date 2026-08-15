@@ -2,6 +2,7 @@
 #include "nand_driver.h"
 #include "nand_chips.h"
 #include "nand_addr.h"
+#include "dump_header.h"
 #include "wifi_transport.h"
 
 #define MAX_PAGE_SIZE 8192  // upper bound for buffer/transfer sizing
@@ -262,6 +263,21 @@ void setup() {
   nand_set_read_mode(cfg_read_mode);
   nand_set_ecc(cfg_ecc_on);
 
+  // ---- Quad self-test: verify a quad read matches a single read, else fall back ----
+  if (cfg_read_mode == NAND_READ_QUAD) {
+    if (g_chip && g_chip->has_qe_bit)
+      nand_set_feature(g_chip->qe_feature_addr,
+                       nand_get_feature(g_chip->qe_feature_addr) | g_chip->qe_bit);
+    uint32_t probe = nand_row_addr(1, 0, cfg_page_addr_bits);
+    if (!nand_quad_selftest(probe, cfg_page_size)) {
+      Serial.println("[!] Quad self-test FAILED — falling back to single x1");
+      cfg_read_mode = NAND_READ_SINGLE;
+      nand_set_read_mode(NAND_READ_SINGLE);
+    } else {
+      Serial.println("[+] Quad self-test passed");
+    }
+  }
+
   Serial.printf("[*] Geometry: %d blocks x %d pages x %d bytes = %.1f MB\n",
                 cfg_total_blocks, cfg_pages_per_block, cfg_page_size,
                 (float)cfg_total_blocks * cfg_pages_per_block * cfg_page_size / (1024.0 * 1024.0));
@@ -291,6 +307,24 @@ void cmd_dump(bool verify) {
 
   uint8_t *page_buf = (uint8_t *)heap_caps_malloc(cfg_page_size, MALLOC_CAP_DMA);
   if (!page_buf) { Serial.println("[!] Buffer alloc failed!"); return; }
+
+  // ---- Send the 32-byte geometry header so the PC self-configures ----
+  dump_geometry_t geo = {0};
+  geo.page_size       = cfg_page_size;
+  geo.spare_size      = cfg_spare_size;
+  geo.pages_per_block = cfg_pages_per_block;
+  geo.total_blocks    = cfg_total_blocks;
+  geo.total_pages     = total_pages;
+  geo.total_bytes     = total_bytes;
+  geo.mfr_id          = g_chip_id >> 8;
+  geo.dev_id          = g_chip_id & 0xFF;
+  geo.page_addr_bits  = cfg_page_addr_bits;
+  geo.flags = (cfg_ecc_on ? DUMP_FLAG_ECC_ON : 0)
+            | (cfg_read_mode == NAND_READ_QUAD ? DUMP_FLAG_QUAD : 0)
+            | (cfg_verify ? DUMP_FLAG_VERIFY : 0);
+  uint8_t hdr[DUMP_HEADER_SIZE];
+  dump_header_pack(hdr, &geo);
+  wifi_transport_send(hdr, sizeof(hdr));
 
   unsigned long startTime = millis();
   uint32_t pagesDone = 0, retryCount = 0, failedPages = 0;
