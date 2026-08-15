@@ -1,6 +1,10 @@
 #include <Arduino.h>
 #include "nand_driver.h"
+#include "nand_chips.h"
+#include "nand_addr.h"
 #include "wifi_transport.h"
+
+#define MAX_PAGE_SIZE 8192  // upper bound for buffer/transfer sizing
 
 // ============ RUNTIME CONFIG (defaults) ============
 static char     cfg_ssid[64]     = "GAE";
@@ -10,10 +14,17 @@ static int      cfg_spi_clock_hz = 1000000;    // 1 MHz
 static nand_read_mode_t cfg_read_mode = NAND_READ_SINGLE;
 static bool     cfg_verify       = true;
 static int      cfg_max_retries  = 5;
-// NAND geometry
-static int      cfg_page_size      = NAND_PAGE_SIZE;       // bytes per page (main + spare)
-static int      cfg_pages_per_block = NAND_PAGES_PER_BLOCK; // pages per block
-static int      cfg_total_blocks   = NAND_TOTAL_BLOCKS;     // total blocks
+// NAND geometry (filled from the detected chip; overridable in the menu)
+static int      cfg_page_size       = 2176;
+static int      cfg_spare_size       = 128;
+static int      cfg_pages_per_block = 64;
+static int      cfg_total_blocks    = 2048;
+static int      cfg_page_addr_bits  = 6;
+static uint8_t  cfg_bad_mark        = 0x00;
+static bool     cfg_ecc_on          = false;   // global policy: OFF/raw
+// Detected chip
+static uint16_t g_chip_id = 0;
+static const nand_chip_t *g_chip = NULL;
 // ===================================================
 
 void cmd_dump(bool verify);
@@ -27,16 +38,12 @@ String read_serial_line() {
     if (Serial.available()) {
       char c = Serial.read();
       if (c == '\n' || c == '\r') {
-        Serial.println();  // echo newline
-        // Drain any trailing \r or \n (handles \r\n, \n\r, etc.)
+        Serial.println();
         delay(5);
         while (Serial.available()) {
           char next = Serial.peek();
-          if (next == '\r' || next == '\n') {
-            Serial.read();  // consume it
-          } else {
-            break;
-          }
+          if (next == '\r' || next == '\n') Serial.read();
+          else break;
         }
         break;
       } else if (c == 127 || c == 8) {  // backspace
@@ -46,7 +53,7 @@ String read_serial_line() {
         }
       } else {
         line += c;
-        Serial.print(c);  // echo
+        Serial.print(c);
       }
     }
     delay(1);
@@ -55,7 +62,6 @@ String read_serial_line() {
   return line;
 }
 
-// Mask a password string for display
 String mask_password(const char *pass) {
   int len = strlen(pass);
   if (len == 0) return "(empty)";
@@ -67,14 +73,24 @@ String mask_password(const char *pass) {
   return masked;
 }
 
+static int log2_int(int v) {
+  int b = 0;
+  while ((1 << (b + 1)) <= v) b++;
+  return b;
+}
+
 void show_menu() {
   int total_pages = cfg_total_blocks * cfg_pages_per_block;
   float total_mb = (float)total_pages * cfg_page_size / (1024.0 * 1024.0);
 
   Serial.println();
   Serial.println("========================================");
-  Serial.println("  ESP32 SPI NAND Dumper v2.1 — Config");
+  Serial.println("  ESP32 SPI NAND Dumper v3.0 — Config");
   Serial.println("========================================");
+  if (g_chip) Serial.printf("  Detected: %s (0x%02X 0x%02X)\n",
+                            g_chip->name, g_chip_id >> 8, g_chip_id & 0xFF);
+  else        Serial.printf("  Detected: UNKNOWN (0x%02X 0x%02X) — manual geometry\n",
+                            g_chip_id >> 8, g_chip_id & 0xFF);
   Serial.println("  -- Network --");
   Serial.printf( "  [1] WiFi SSID:       %s\n", cfg_ssid);
   Serial.printf( "  [2] WiFi Password:   %s\n", mask_password(cfg_pass).c_str());
@@ -85,8 +101,9 @@ void show_menu() {
                  cfg_read_mode == NAND_READ_QUAD ? "Quad x4" : "Single x1");
   Serial.printf( "  [6] Verify Reads:    %s\n", cfg_verify ? "ON" : "OFF");
   Serial.printf( "  [7] Max Retries:     %d\n", cfg_max_retries);
+  Serial.printf( "  [E] ECC on read:     %s\n", cfg_ecc_on ? "ON (corrected)" : "OFF (raw)");
   Serial.println("  -- NAND Geometry --");
-  Serial.printf( "  [8] Page Size:       %d bytes\n", cfg_page_size);
+  Serial.printf( "  [8] Page Size:       %d bytes (spare %d)\n", cfg_page_size, cfg_spare_size);
   Serial.printf( "  [9] Pages/Block:     %d\n", cfg_pages_per_block);
   Serial.printf( "  [0] Total Blocks:    %d\n", cfg_total_blocks);
   Serial.printf( "       Total:          %d pages, %.1f MB\n", total_pages, total_mb);
@@ -101,140 +118,103 @@ void config_menu() {
 
   while (true) {
     String input = read_serial_line();
-    if (input.length() == 0) {
-      Serial.print("  Select> ");
-      continue;
-    }
+    if (input.length() == 0) { Serial.print("  Select> "); continue; }
 
     char choice = toupper(input.charAt(0));
 
-    if (choice == 'S') {
-      Serial.println("[*] Starting with current settings...");
-      return;
-    }
+    if (choice == 'S') { Serial.println("[*] Starting with current settings..."); return; }
 
     switch (choice) {
       case '1':
         Serial.print("  Enter new SSID: ");
-        { String val = read_serial_line();
-          if (val.length() > 0) strncpy(cfg_ssid, val.c_str(), sizeof(cfg_ssid) - 1);
-        }
+        { String v = read_serial_line();
+          if (v.length() > 0) strncpy(cfg_ssid, v.c_str(), sizeof(cfg_ssid) - 1); }
         break;
-
       case '2':
         Serial.print("  Enter new Password: ");
-        { String val = read_serial_line();
-          if (val.length() > 0) strncpy(cfg_pass, val.c_str(), sizeof(cfg_pass) - 1);
-        }
+        { String v = read_serial_line();
+          if (v.length() > 0) strncpy(cfg_pass, v.c_str(), sizeof(cfg_pass) - 1); }
         break;
-
       case '3':
         Serial.print("  Enter new TCP Port: ");
-        { String val = read_serial_line();
-          int v = val.toInt();
-          if (v > 0 && v <= 65535) cfg_tcp_port = (uint16_t)v;
-          else Serial.println("  [!] Invalid port (1-65535)");
-        }
+        { String v = read_serial_line(); int p = v.toInt();
+          if (p > 0 && p <= 65535) cfg_tcp_port = (uint16_t)p;
+          else Serial.println("  [!] Invalid port (1-65535)"); }
         break;
-
       case '4':
         Serial.println("  SPI Clock presets:");
         Serial.println("    [a] 1 MHz   [b] 5 MHz   [c] 10 MHz");
         Serial.println("    [d] 20 MHz  [e] 40 MHz  [x] Custom");
         Serial.print("  Pick> ");
-        { String val = read_serial_line();
-          char p = toupper(val.charAt(0));
+        { String v = read_serial_line(); char p = toupper(v.charAt(0));
           switch (p) {
             case 'A': cfg_spi_clock_hz = 1000000; break;
             case 'B': cfg_spi_clock_hz = 5000000; break;
             case 'C': cfg_spi_clock_hz = 10000000; break;
             case 'D': cfg_spi_clock_hz = 20000000; break;
             case 'E': cfg_spi_clock_hz = 40000000; break;
-            case 'X':
-              Serial.print("  Enter Hz: ");
-              { String hz = read_serial_line();
-                int v = hz.toInt();
-                if (v > 0) cfg_spi_clock_hz = v;
-                else Serial.println("  [!] Invalid frequency");
-              }
+            case 'X': Serial.print("  Enter Hz: ");
+              { String hz = read_serial_line(); int q = hz.toInt();
+                if (q > 0) cfg_spi_clock_hz = q; else Serial.println("  [!] Invalid"); }
               break;
-            default:
-              Serial.println("  [!] Invalid choice");
-              break;
-          }
-        }
+            default: Serial.println("  [!] Invalid choice"); break;
+          } }
         break;
-
       case '5':
-        cfg_read_mode = (cfg_read_mode == NAND_READ_QUAD)
-                         ? NAND_READ_SINGLE : NAND_READ_QUAD;
-        Serial.printf("  Read mode set to: %s\n",
-                      cfg_read_mode == NAND_READ_QUAD ? "Quad x4" : "Single x1");
+        cfg_read_mode = (cfg_read_mode == NAND_READ_QUAD) ? NAND_READ_SINGLE : NAND_READ_QUAD;
+        Serial.printf("  Read mode: %s\n", cfg_read_mode == NAND_READ_QUAD ? "Quad x4" : "Single x1");
         break;
-
       case '6':
         cfg_verify = !cfg_verify;
         Serial.printf("  Verify reads: %s\n", cfg_verify ? "ON" : "OFF");
         break;
-
       case '7':
         Serial.print("  Enter max retries: ");
-        { String val = read_serial_line();
-          int v = val.toInt();
-          if (v >= 0 && v <= 100) cfg_max_retries = v;
-          else Serial.println("  [!] Invalid (0-100)");
-        }
+        { String v = read_serial_line(); int q = v.toInt();
+          if (q >= 0 && q <= 100) cfg_max_retries = q; else Serial.println("  [!] Invalid (0-100)"); }
         break;
-
+      case 'E':
+        cfg_ecc_on = !cfg_ecc_on;
+        Serial.printf("  ECC on read: %s\n", cfg_ecc_on ? "ON (corrected)" : "OFF (raw)");
+        break;
       case '8':
         Serial.println("  Page size presets:");
         Serial.println("    [a] 2112 (2048+64)   [b] 2176 (2048+128)");
         Serial.println("    [c] 4320 (4096+224)  [x] Custom");
         Serial.print("  Pick> ");
-        { String val = read_serial_line();
-          char p = toupper(val.charAt(0));
+        { String v = read_serial_line(); char p = toupper(v.charAt(0));
           switch (p) {
-            case 'A': cfg_page_size = 2112; break;
-            case 'B': cfg_page_size = 2176; break;
-            case 'C': cfg_page_size = 4320; break;
-            case 'X':
-              Serial.print("  Enter page size (bytes): ");
-              { String sz = read_serial_line();
-                int v = sz.toInt();
-                if (v > 0 && v <= 8192) cfg_page_size = v;
-                else Serial.println("  [!] Invalid (1-8192)");
-              }
+            case 'A': cfg_page_size = 2112; cfg_spare_size = 64;  break;
+            case 'B': cfg_page_size = 2176; cfg_spare_size = 128; break;
+            case 'C': cfg_page_size = 4320; cfg_spare_size = 224; break;
+            case 'X': Serial.print("  Enter page size (bytes): ");
+              { String sz = read_serial_line(); int q = sz.toInt();
+                if (q > 0 && q <= MAX_PAGE_SIZE) cfg_page_size = q;
+                else Serial.println("  [!] Invalid"); }
+              Serial.print("  Enter spare size (bytes): ");
+              { String sz = read_serial_line(); int q = sz.toInt();
+                if (q >= 0 && q < cfg_page_size) cfg_spare_size = q;
+                else Serial.println("  [!] Invalid"); }
               break;
-            default:
-              Serial.println("  [!] Invalid choice");
-              break;
-          }
-        }
+            default: Serial.println("  [!] Invalid choice"); break;
+          } }
         break;
-
       case '9':
-        Serial.print("  Enter pages per block: ");
-        { String val = read_serial_line();
-          int v = val.toInt();
-          if (v > 0 && v <= 256) cfg_pages_per_block = v;
-          else Serial.println("  [!] Invalid (1-256)");
-        }
+        Serial.print("  Enter pages per block (power of 2): ");
+        { String v = read_serial_line(); int q = v.toInt();
+          if (q > 0 && q <= 256 && (q & (q - 1)) == 0) {
+            cfg_pages_per_block = q; cfg_page_addr_bits = log2_int(q);
+          } else Serial.println("  [!] Invalid (power of 2, 1-256)"); }
         break;
-
       case '0':
         Serial.print("  Enter total blocks: ");
-        { String val = read_serial_line();
-          int v = val.toInt();
-          if (v > 0 && v <= 65535) cfg_total_blocks = v;
-          else Serial.println("  [!] Invalid (1-65535)");
-        }
+        { String v = read_serial_line(); int q = v.toInt();
+          if (q > 0 && q <= 65535) cfg_total_blocks = q; else Serial.println("  [!] Invalid"); }
         break;
-
       default:
         Serial.println("  [!] Unknown option");
         break;
     }
-
     show_menu();
   }
 }
@@ -243,54 +223,60 @@ void config_menu() {
 
 void setup() {
   Serial.begin(115200);
-  delay(500);  // let serial settle
+  delay(500);
 
   Serial.println("\n========================================");
-  Serial.println("  ESP32 SPI NAND Dumper v2.1");
-  Serial.println("  Quad SPI + WiFi TCP");
+  Serial.println("  ESP32 SPI NAND Dumper v3.0");
+  Serial.println("  Auto-detect + WiFi TCP");
   Serial.println("========================================");
 
-  // ---- Interactive config ----
-  config_menu();
-
-  // ---- Initialize NAND ----
+  // ---- Bring SPI up slow, detect the chip ----
   nand_config_t nand_cfg = NAND_DEFAULT_CONFIG();
-  nand_cfg.clock_hz  = cfg_spi_clock_hz;
-  nand_cfg.read_mode = cfg_read_mode;
-
-  esp_err_t ret = nand_init(&nand_cfg);
-  if (ret != ESP_OK) {
-    Serial.printf("[!] NAND init failed: %s\n", esp_err_to_name(ret));
-    return;
+  nand_cfg.clock_hz  = 1000000;
+  nand_cfg.read_mode = NAND_READ_SINGLE;
+  if (nand_init(&nand_cfg, MAX_PAGE_SIZE) != ESP_OK) {
+    Serial.println("[!] NAND init failed"); return;
   }
 
-  // Print NAND info
-  uint16_t id = nand_read_id();
-  Serial.printf("[*] NAND ID: 0x%04X (Mfr: 0x%02X, Dev: 0x%02X)\n",
-                id, id >> 8, id & 0xFF);
-  Serial.printf("[*] Read mode: %s\n",
-                nand_get_read_mode() == NAND_READ_QUAD ? "Quad x4" : "Single x1");
-  Serial.printf("[*] SPI clock: %d Hz\n", cfg_spi_clock_hz);
+  g_chip_id = nand_read_id();
+  g_chip = nand_chip_lookup(g_chip_id >> 8, g_chip_id & 0xFF);
+  if (g_chip) {
+    Serial.printf("[*] Detected %s (0x%02X 0x%02X)\n",
+                  g_chip->name, g_chip_id >> 8, g_chip_id & 0xFF);
+    cfg_page_size       = g_chip->page_size;
+    cfg_spare_size      = g_chip->spare_size;
+    cfg_pages_per_block = g_chip->pages_per_block;
+    cfg_total_blocks    = g_chip->total_blocks;
+    cfg_page_addr_bits  = g_chip->page_addr_bits;
+    cfg_bad_mark        = g_chip->bad_block_mark;
+    cfg_ecc_on          = g_chip->ecc_default_on;
+  } else {
+    Serial.printf("[!] Unknown chip 0x%02X 0x%02X — using manual defaults\n",
+                  g_chip_id >> 8, g_chip_id & 0xFF);
+  }
+
+  // ---- Interactive config (pre-filled) ----
+  config_menu();
+
+  // ---- Apply final SPI mode + ECC state ----
+  nand_set_read_mode(cfg_read_mode);
+  nand_set_ecc(cfg_ecc_on);
+
   Serial.printf("[*] Geometry: %d blocks x %d pages x %d bytes = %.1f MB\n",
                 cfg_total_blocks, cfg_pages_per_block, cfg_page_size,
                 (float)cfg_total_blocks * cfg_pages_per_block * cfg_page_size / (1024.0 * 1024.0));
+  Serial.printf("[*] ECC: %s | Read: %s | Clock: %d Hz\n",
+                cfg_ecc_on ? "ON" : "OFF",
+                cfg_read_mode == NAND_READ_QUAD ? "Quad x4" : "Single x1",
+                cfg_spi_clock_hz);
 
-  // ---- Initialize WiFi Transport ----
-  wifi_transport_config_t wifi_cfg = {
-    .ssid = cfg_ssid,
-    .password = cfg_pass,
-    .port = cfg_tcp_port,
-  };
-
-  if (!wifi_transport_init(&wifi_cfg)) {
-    Serial.println("[!] WiFi init failed!");
-    return;
-  }
+  // ---- WiFi transport ----
+  wifi_transport_config_t wifi_cfg = { .ssid = cfg_ssid, .password = cfg_pass, .port = cfg_tcp_port };
+  if (!wifi_transport_init(&wifi_cfg)) { Serial.println("[!] WiFi init failed!"); return; }
 
   wifi_transport_wait_client();
   wifi_transport_wait_trigger();
 
-  // ---- Run dump ----
   cmd_dump(cfg_verify);
 }
 
@@ -303,26 +289,19 @@ void cmd_dump(bool verify) {
   uint32_t total_pages = (uint32_t)cfg_total_blocks * cfg_pages_per_block;
   uint32_t total_bytes = total_pages * (uint32_t)cfg_page_size;
 
-  // DMA-capable page buffer (allocate max possible for safety)
-  int alloc_size = cfg_page_size > NAND_PAGE_SIZE ? cfg_page_size : NAND_PAGE_SIZE;
-  uint8_t *page_buf = (uint8_t*)heap_caps_malloc(alloc_size, MALLOC_CAP_DMA);
-  if (!page_buf) {
-    Serial.println("[!] Buffer alloc failed!");
-    return;
-  }
+  uint8_t *page_buf = (uint8_t *)heap_caps_malloc(cfg_page_size, MALLOC_CAP_DMA);
+  if (!page_buf) { Serial.println("[!] Buffer alloc failed!"); return; }
 
   unsigned long startTime = millis();
-  uint32_t pagesDone = 0;
-  uint32_t retryCount = 0;
-  uint32_t failedPages = 0;
+  uint32_t pagesDone = 0, retryCount = 0, failedPages = 0;
 
   for (int block = 0; block < cfg_total_blocks; block++) {
     for (int page = 0; page < cfg_pages_per_block; page++) {
-      uint16_t row = (block << 6) | (page & 0x3F);
+      uint32_t row = nand_row_addr(block, page, cfg_page_addr_bits);
 
       if (verify) {
-        bool ok = nand_read_page_verified(row, page_buf, cfg_page_size, cfg_max_retries, &retryCount);
-        if (!ok) failedPages++;
+        if (!nand_read_page_verified(row, page_buf, cfg_page_size, cfg_max_retries, &retryCount))
+          failedPages++;
       } else {
         nand_page_read_to_cache(row);
         nand_wait_ready();
