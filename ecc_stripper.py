@@ -1,66 +1,63 @@
-"""
-ESP32 SPI NAND Dumper — ECC / OOB Stripper.
+"""Strip spare/OOB from a raw NAND dump into a main-area image.
 
-Post-processes a raw NAND dump (2112 bytes/page) into a clean
-firmware image (2048 bytes/page) by stripping the 64-byte
-OOB/spare area from each page.
+Geometry comes from the dump's .meta.json sidecar (written by dump.py),
+or from --page-size/--spare-size/--pages-per-block overrides.
 
-Bad blocks are detected by checking the first byte of the spare
-area in each block's first page. Bad block pages are replaced
-with 0xFF padding to preserve filesystem alignment.
+Bad blocks (first spare byte != good marker on a block's first page) are
+replaced with 0xFF padding so filesystem offsets stay aligned.
 
 Usage:
-    python3 ecc_stripper.py
-
-Input:  ds35_raw_dump.bin       (raw dump from dump.py)
-Output: ds35_clean_firmware.bin (clean, mountable image)
+    python3 ecc_stripper.py raw.bin clean.bin --meta raw.bin.meta.json
+    python3 ecc_stripper.py raw.bin clean.bin --page-size 2176 --spare-size 128 --pages-per-block 64
 """
+import argparse
+import json
 import os
 
-INPUT_FILE = 'target/5th_comp.bin'
-OUTPUT_FILE = 'target/5th_comp_clean.bin'
 
-PAGE_SIZE_RAW = 2112
-PAGE_SIZE_CLEAN = 2048
-PAGES_PER_BLOCK = 64
+def load_geometry(meta_path):
+    with open(meta_path) as f:
+        return json.load(f)["geometry"]
 
-def process_dump():
-    file_size = os.path.getsize(INPUT_FILE)
-    total_pages = file_size // PAGE_SIZE_RAW
-    
-    print(f"[*] Analyzing {INPUT_FILE} ({total_pages} pages found)")
-    
+
+def strip(in_path, out_path, page_size, spare_size, pages_per_block,
+          bad_mark=0x00, good=0xFF):
+    main = page_size - spare_size
+    total_pages = os.path.getsize(in_path) // page_size
     bad_blocks = []
-    
-    with open(INPUT_FILE, 'rb') as raw_file, open(OUTPUT_FILE, 'wb') as clean_file:
-        for page_idx in range(total_pages):
-            # Read the full 2112-byte raw page
-            raw_page = raw_file.read(PAGE_SIZE_RAW)
-            
-            # The first page of every block dictates the block's health
-            if page_idx % PAGES_PER_BLOCK == 0:
-                block_num = page_idx // PAGES_PER_BLOCK
-                
-                # Byte 2048 is the 1st byte of the spare area (Index 2048 in 0-indexed array)
-                bad_block_marker = raw_page[2048]
-                
-                if bad_block_marker != 0xFF:
-                    bad_blocks.append(block_num)
-                    print(f"[!] WARNING: Bad Block detected at Block {block_num} (Marker: {hex(bad_block_marker)})")
-            
-            # Slice off the 64-byte OOB/Spare area and save the pure 2048 bytes
-            clean_payload = raw_page[:PAGE_SIZE_CLEAN]
-            
-            # If the block is bad, it usually contains garbage. 
-            # Padding it with 0xFF ensures filesystem offsets remain aligned.
-            if (page_idx // PAGES_PER_BLOCK) in bad_blocks:
-                clean_file.write(b'\xFF' * PAGE_SIZE_CLEAN)
+    with open(in_path, "rb") as raw, open(out_path, "wb") as clean:
+        for idx in range(total_pages):
+            page = raw.read(page_size)
+            block = idx // pages_per_block
+            if idx % pages_per_block == 0 and page[main] != good:
+                bad_blocks.append(block)
+            if block in bad_blocks:
+                clean.write(bytes([good]) * main)
             else:
-                clean_file.write(clean_payload)
+                clean.write(page[:main])
+    return bad_blocks
 
-    print(f"\n[*] Processing complete!")
-    print(f"[*] Found {len(bad_blocks)} Bad Blocks out of 1024 total blocks.")
-    print(f"[*] Clean, mountable firmware saved to: {OUTPUT_FILE}")
 
-if __name__ == '__main__':
-    process_dump()
+def main():
+    ap = argparse.ArgumentParser(description="Strip spare/OOB from a raw NAND dump")
+    ap.add_argument("input")
+    ap.add_argument("output")
+    ap.add_argument("--meta", help="path to <dump>.meta.json")
+    ap.add_argument("--page-size", type=int)
+    ap.add_argument("--spare-size", type=int)
+    ap.add_argument("--pages-per-block", type=int)
+    a = ap.parse_args()
+    if a.meta:
+        g = load_geometry(a.meta)
+        ps, ss, ppb = g["page_size"], g["spare_size"], g["pages_per_block"]
+    else:
+        if None in (a.page_size, a.spare_size, a.pages_per_block):
+            ap.error("provide --meta OR all of --page-size/--spare-size/--pages-per-block")
+        ps, ss, ppb = a.page_size, a.spare_size, a.pages_per_block
+    bad = strip(a.input, a.output, ps, ss, ppb)
+    print(f"[*] {len(bad)} bad block(s): {bad}")
+    print(f"[*] wrote {a.output}")
+
+
+if __name__ == "__main__":
+    main()
