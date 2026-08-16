@@ -25,6 +25,7 @@ typedef struct {
   .clock_hz = 1000000, .read_mode = NAND_READ_SINGLE }
 
 esp_err_t nand_init(const nand_config_t *config, int max_page_size);
+esp_err_t nand_set_clock(int clock_hz);       // re-clock the device post-detection
 void      nand_reset(void);
 void      nand_wait_ready(void);
 uint8_t   nand_get_feature(uint8_t addr);

@@ -259,6 +259,16 @@ void setup() {
   // ---- Interactive config (pre-filled) ----
   config_menu();
 
+  // ---- Apply the chosen SPI clock ----
+  // The device was created at 1 MHz for safe detection; re-create it at the
+  // user-selected speed now. Without this the bus stays at 1 MHz regardless of
+  // the menu (the old throughput bug).
+  esp_err_t clk_ret = nand_set_clock(cfg_spi_clock_hz);
+  if (clk_ret == ESP_OK)
+    Serial.printf("[*] SPI clock applied: %d Hz\n", cfg_spi_clock_hz);
+  else
+    Serial.printf("[!] SPI clock change failed (%d) — staying at init speed\n", clk_ret);
+
   // ---- Apply final SPI mode + ECC state ----
   nand_set_read_mode(cfg_read_mode);
   nand_set_ecc(cfg_ecc_on);

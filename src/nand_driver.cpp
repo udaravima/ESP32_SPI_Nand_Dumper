@@ -4,6 +4,7 @@
 #include <Arduino.h>  // For Serial debug
 
 static spi_device_handle_t s_spi;
+static spi_device_interface_config_t s_devcfg;  // kept so nand_set_clock can re-add the device
 static nand_read_mode_t s_read_mode = NAND_READ_SINGLE;
 static uint8_t *s_verify_buf = NULL;
 
@@ -18,18 +19,18 @@ esp_err_t nand_init(const nand_config_t *config, int max_page_size) {
   buscfg.quadhd_io_num = config->pin_d3;
   buscfg.max_transfer_sz = max_page_size + 16;
 
-  spi_device_interface_config_t devcfg = {};
-  devcfg.clock_speed_hz = config->clock_hz;
-  devcfg.mode = 0;
-  devcfg.spics_io_num = config->pin_cs;
-  devcfg.queue_size = 1;
-  devcfg.flags = SPI_DEVICE_HALFDUPLEX;
-  devcfg.command_bits = 8;
-  devcfg.address_bits = 0;  // variable per transaction
+  s_devcfg = {};
+  s_devcfg.clock_speed_hz = config->clock_hz;
+  s_devcfg.mode = 0;
+  s_devcfg.spics_io_num = config->pin_cs;
+  s_devcfg.queue_size = 1;
+  s_devcfg.flags = SPI_DEVICE_HALFDUPLEX;
+  s_devcfg.command_bits = 8;
+  s_devcfg.address_bits = 0;  // variable per transaction
 
   esp_err_t ret = spi_bus_initialize(NAND_SPI_HOST, &buscfg, SPI_DMA_CH_AUTO);
   if (ret != ESP_OK) return ret;
-  ret = spi_bus_add_device(NAND_SPI_HOST, &devcfg, &s_spi);
+  ret = spi_bus_add_device(NAND_SPI_HOST, &s_devcfg, &s_spi);
   if (ret != ESP_OK) return ret;
 
   // Verify buffer sized to the largest page we might read.
@@ -39,6 +40,19 @@ esp_err_t nand_init(const nand_config_t *config, int max_page_size) {
   nand_reset();
   nand_wait_ready();
   return ESP_OK;
+}
+
+// Re-create the SPI device at a new clock. The device is first created at a
+// slow, safe speed (for chip detection); call this after the user picks a
+// speed so the dump actually runs at it. Without this the bus is stuck at the
+// init clock no matter what the menu shows. Returns ESP_OK on success.
+esp_err_t nand_set_clock(int clock_hz) {
+  if (!s_spi) return ESP_ERR_INVALID_STATE;
+  esp_err_t ret = spi_bus_remove_device(s_spi);
+  if (ret != ESP_OK) return ret;
+  s_spi = NULL;
+  s_devcfg.clock_speed_hz = clock_hz;
+  return spi_bus_add_device(NAND_SPI_HOST, &s_devcfg, &s_spi);
 }
 
 void nand_reset(void) {
