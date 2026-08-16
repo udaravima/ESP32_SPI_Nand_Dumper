@@ -220,6 +220,46 @@ void config_menu() {
   }
 }
 
+// Apply the user's SPI clock, read mode, and ECC to the chip, and (if quad is
+// selected) run the quad self-test with fallback. Called after the initial menu
+// and after every [M] reconfigure. The chip retains these settings across
+// dumps, so no reset is needed between dumps.
+void apply_runtime_settings() {
+  // The device was created at 1 MHz for safe detection; re-clock it to the
+  // user-selected speed. Without this the bus stays at 1 MHz (the old bug).
+  esp_err_t clk_ret = nand_set_clock(cfg_spi_clock_hz);
+  if (clk_ret == ESP_OK)
+    Serial.printf("[*] SPI clock applied: %d Hz\n", cfg_spi_clock_hz);
+  else
+    Serial.printf("[!] SPI clock change failed (%d) — staying at init speed\n", clk_ret);
+
+  nand_set_read_mode(cfg_read_mode);
+  nand_set_ecc(cfg_ecc_on);
+
+  // Quad self-test: verify a quad read matches a single read, else fall back.
+  if (cfg_read_mode == NAND_READ_QUAD) {
+    if (g_chip && g_chip->has_qe_bit)
+      nand_set_feature(g_chip->qe_feature_addr,
+                       nand_get_feature(g_chip->qe_feature_addr) | g_chip->qe_bit);
+    uint32_t probe = nand_row_addr(1, 0, cfg_page_addr_bits);
+    if (!nand_quad_selftest(probe, cfg_page_size)) {
+      Serial.println("[!] Quad self-test FAILED — falling back to single x1");
+      cfg_read_mode = NAND_READ_SINGLE;
+      nand_set_read_mode(NAND_READ_SINGLE);
+    } else {
+      Serial.println("[+] Quad self-test passed");
+    }
+  }
+
+  Serial.printf("[*] Geometry: %d blocks x %d pages x %d bytes = %.1f MB\n",
+                cfg_total_blocks, cfg_pages_per_block, cfg_page_size,
+                (float)cfg_total_blocks * cfg_pages_per_block * cfg_page_size / (1024.0 * 1024.0));
+  Serial.printf("[*] ECC: %s | Read: %s | Clock: %d Hz\n",
+                cfg_ecc_on ? "ON" : "OFF",
+                cfg_read_mode == NAND_READ_QUAD ? "Quad x4" : "Single x1",
+                cfg_spi_clock_hz);
+}
+
 // ============ SETUP ============
 
 void setup() {
@@ -258,55 +298,47 @@ void setup() {
 
   // ---- Interactive config (pre-filled) ----
   config_menu();
+  apply_runtime_settings();
 
-  // ---- Apply the chosen SPI clock ----
-  // The device was created at 1 MHz for safe detection; re-create it at the
-  // user-selected speed now. Without this the bus stays at 1 MHz regardless of
-  // the menu (the old throughput bug).
-  esp_err_t clk_ret = nand_set_clock(cfg_spi_clock_hz);
-  if (clk_ret == ESP_OK)
-    Serial.printf("[*] SPI clock applied: %d Hz\n", cfg_spi_clock_hz);
-  else
-    Serial.printf("[!] SPI clock change failed (%d) — staying at init speed\n", clk_ret);
-
-  // ---- Apply final SPI mode + ECC state ----
-  nand_set_read_mode(cfg_read_mode);
-  nand_set_ecc(cfg_ecc_on);
-
-  // ---- Quad self-test: verify a quad read matches a single read, else fall back ----
-  if (cfg_read_mode == NAND_READ_QUAD) {
-    if (g_chip && g_chip->has_qe_bit)
-      nand_set_feature(g_chip->qe_feature_addr,
-                       nand_get_feature(g_chip->qe_feature_addr) | g_chip->qe_bit);
-    uint32_t probe = nand_row_addr(1, 0, cfg_page_addr_bits);
-    if (!nand_quad_selftest(probe, cfg_page_size)) {
-      Serial.println("[!] Quad self-test FAILED — falling back to single x1");
-      cfg_read_mode = NAND_READ_SINGLE;
-      nand_set_read_mode(NAND_READ_SINGLE);
-    } else {
-      Serial.println("[+] Quad self-test passed");
-    }
-  }
-
-  Serial.printf("[*] Geometry: %d blocks x %d pages x %d bytes = %.1f MB\n",
-                cfg_total_blocks, cfg_pages_per_block, cfg_page_size,
-                (float)cfg_total_blocks * cfg_pages_per_block * cfg_page_size / (1024.0 * 1024.0));
-  Serial.printf("[*] ECC: %s | Read: %s | Clock: %d Hz\n",
-                cfg_ecc_on ? "ON" : "OFF",
-                cfg_read_mode == NAND_READ_QUAD ? "Quad x4" : "Single x1",
-                cfg_spi_clock_hz);
-
-  // ---- WiFi transport ----
+  // ---- WiFi transport (brought up once; stays up across dumps) ----
   wifi_transport_config_t wifi_cfg = { .ssid = cfg_ssid, .password = cfg_pass, .port = cfg_tcp_port };
   if (!wifi_transport_init(&wifi_cfg)) { Serial.println("[!] WiFi init failed!"); return; }
 
-  wifi_transport_wait_client();
-  wifi_transport_wait_trigger();
-
-  cmd_dump(cfg_verify);
+  Serial.println("[+] Ready. Run dump.py to start a dump.");
+  Serial.println("    Between dumps: press 'M' then Enter here to reconfigure (no reset needed).");
 }
 
-void loop() {}
+// Re-dumpable serve loop — dump on each new client, no ESP reset between dumps.
+void loop() {
+  static bool announced = false;
+  if (!announced) {
+    Serial.println("[*] Waiting for client (run dump.py)...");
+    announced = true;
+  }
+
+  // Live reconfigure between dumps, over serial, without a reset.
+  if (Serial.available()) {
+    char c = Serial.read();
+    if (c == 'M' || c == 'm') {
+      while (Serial.available()) Serial.read();   // drain the rest of the line
+      config_menu();
+      apply_runtime_settings();
+      Serial.println("    (SPI/geometry/ECC applied now; WiFi SSID/port changes still need a reset.)");
+      announced = false;
+    }
+  }
+
+  // Dump as soon as a client connects and sends 'G'. cmd_dump() closes the
+  // client at the end, so the next connection begins a fresh dump.
+  if (wifi_transport_client_available()) {
+    wifi_transport_wait_trigger();
+    cmd_dump(cfg_verify);
+    Serial.println("[+] Dump complete. Run dump.py again to re-dump, or 'M' to reconfigure.");
+    announced = false;
+  }
+
+  delay(5);
+}
 
 // ---- Dump Command ----
 void cmd_dump(bool verify) {

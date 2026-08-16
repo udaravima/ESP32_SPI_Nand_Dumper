@@ -42,6 +42,15 @@ bool wifi_transport_wait_client() {
   return true;
 }
 
+bool wifi_transport_client_available() {
+  s_client = s_server->available();
+  if (s_client) {
+    s_client.setNoDelay(true);
+    return true;
+  }
+  return false;
+}
+
 void wifi_transport_wait_trigger() {
   Serial.println("[*] Waiting for GO trigger...");
   while (true) {

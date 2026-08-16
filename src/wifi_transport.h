@@ -20,6 +20,10 @@ bool wifi_transport_init(const wifi_transport_config_t *config);
 // Returns true when client is connected.
 bool wifi_transport_wait_client();
 
+// Non-blocking: accept a waiting client if one is present.
+// Returns true if a client was accepted (into the internal handle), else false.
+bool wifi_transport_client_available();
+
 // Wait for the 'G' (GO) trigger from the client.
 void wifi_transport_wait_trigger();
 
