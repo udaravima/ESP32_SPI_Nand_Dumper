@@ -4,6 +4,13 @@ A chip-agnostic ESP32 tool for extracting firmware from SPI NAND flash over WiFi
 
 Verified on the **Micron MT29F2G01** (2 Gbit, JEDEC `0x2C 0x24`). Adding another chip is a few lines of YAML — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Documentation
+
+- **[Quick Start](docs/QUICKSTART.md)** — first dump in ~10 minutes.
+- **[User Guide](docs/USER_GUIDE.md)** — full operation: wiring, config menu, ECC modes, workflow, troubleshooting.
+- **[Developer Guide](docs/DEVELOPER_GUIDE.md)** — architecture, tests, wire protocol, adding a chip or board.
+- **[Contributing](CONTRIBUTING.md)** — add your chip to the registry.
+
 ## Features
 
 - **Auto-detect by JEDEC ID** — reads `9Fh`, looks up geometry + capabilities in the compiled chip table. Unknown chips fall back to a manual-entry menu.
