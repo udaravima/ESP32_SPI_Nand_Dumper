@@ -43,12 +43,19 @@ void test_header_pack_layout_and_crc(void) {
   dump_header_pack(buf, &g);
 
   TEST_ASSERT_EQUAL_UINT8_ARRAY("NANDMP", buf, 6);
-  TEST_ASSERT_EQUAL_UINT8(1, buf[6]);                       // proto version
+  TEST_ASSERT_EQUAL_UINT8(2, buf[6]);                       // proto version
   TEST_ASSERT_EQUAL_UINT16(2176, buf[8] | (buf[9] << 8));   // page_size LE
   // CRC over bytes 0..27 lands in bytes 28..31
   uint32_t crc = dump_crc32(buf, 28);
   uint32_t stored = buf[28] | (buf[29] << 8) | (buf[30] << 16) | ((uint32_t)buf[31] << 24);
   TEST_ASSERT_EQUAL_UINT32(crc, stored);
+}
+
+void test_crc32_canonical_check_value(void) {
+  // The per-page seal must be standard CRC-32 (poly 0xEDB88320, init/final 0xFFFFFFFF)
+  // so Python's zlib.crc32 agrees byte-for-byte. Canonical check over "123456789".
+  const uint8_t msg[] = {'1','2','3','4','5','6','7','8','9'};
+  TEST_ASSERT_EQUAL_UINT32(0xCBF43926u, dump_crc32(msg, 9));
 }
 
 int main(int, char **) {
@@ -59,5 +66,6 @@ int main(int, char **) {
   RUN_TEST(test_row_addr_last_page_of_2gbit);
   RUN_TEST(test_row_addr_masks_page_field);
   RUN_TEST(test_header_pack_layout_and_crc);
+  RUN_TEST(test_crc32_canonical_check_value);
   return UNITY_END();
 }

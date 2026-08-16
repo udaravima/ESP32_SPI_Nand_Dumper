@@ -9,7 +9,7 @@ def parse_header(buf):
     (magic, ver, flags, page_size, spare_size, ppb, total_blocks,
      total_pages, mfr, dev, page_addr_bits, _res, total_bytes, crc) = struct.unpack(FMT, buf)
     assert magic == b"NANDMP", "bad magic"
-    assert ver == 1, "bad proto version"
+    assert ver in (1, 2), "bad proto version"
     assert zlib.crc32(buf[:28]) & 0xFFFFFFFF == crc, "crc mismatch"
     return dict(page_size=page_size, spare_size=spare_size, pages_per_block=ppb,
                 total_blocks=total_blocks, total_pages=total_pages, mfr_id=mfr,
@@ -18,9 +18,9 @@ def parse_header(buf):
 
 
 def build_header(**g):
-    body = struct.pack(FMT[:-1], b"NANDMP", 1, g["flags"], g["page_size"],
-                       g["spare_size"], g["pages_per_block"], g["total_blocks"],
-                       g["total_pages"], g["mfr_id"], g["dev_id"],
+    body = struct.pack(FMT[:-1], b"NANDMP", g.get("proto_version", 2), g["flags"],
+                       g["page_size"], g["spare_size"], g["pages_per_block"],
+                       g["total_blocks"], g["total_pages"], g["mfr_id"], g["dev_id"],
                        g["page_addr_bits"], 0, g["total_bytes"])
     return body + struct.pack("<I", zlib.crc32(body) & 0xFFFFFFFF)
 
@@ -39,7 +39,7 @@ def test_golden_bytes_micron():
              total_pages=2048*64, total_bytes=2048*64*2176, mfr_id=0x2C, dev_id=0x24,
              page_addr_bits=6, flags=0)
     assert build_header(**g).hex() == \
-        "4e414e444d5001008008800040000008000002002c2406000000001143019d5d"
+        "4e414e444d5002008008800040000008000002002c2406000000001103ace564"
 
 
 def test_rejects_bad_crc():

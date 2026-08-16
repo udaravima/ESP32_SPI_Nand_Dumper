@@ -17,15 +17,26 @@ import time
 import sys
 import os
 import datetime
+from collections import namedtuple
 
 # ============ CONFIGURATION ============
-ESP32_IP = '10.238.136.57'   # <-- UPDATE THIS (from the serial monitor)
+ESP32_IP = '10.65.224.57'   # <-- UPDATE THIS (from the serial monitor)
 TCP_PORT = 3333
 PROGRESS_INTERVAL = 1024      # print progress every N pages
 # =======================================
 
 HEADER_FMT = "<6sBBHHHHIBBBBII"
 HEADER_SIZE = 32
+
+# Header flag bits (must match src/dump_header.h)
+FLAG_ECC_ON = 0x01
+FLAG_QUAD = 0x02
+FLAG_VERIFY = 0x04
+FLAG_PAGECRC = 0x08   # proto v2: each page followed by a 4-byte CRC32 seal
+
+# Result of streaming a dump off the wire.
+ReceiveResult = namedtuple(
+    "ReceiveResult", "bytes_received pages_received bad_pages truncated")
 
 
 def parse_header(buf):
@@ -34,11 +45,12 @@ def parse_header(buf):
     (magic, ver, flags, page_size, spare_size, ppb, total_blocks,
      total_pages, mfr, dev, pab, _r, total_bytes, crc) = struct.unpack(HEADER_FMT, buf)
     assert magic == b"NANDMP", "bad magic"
-    assert ver == 1, "bad proto version"
+    assert ver in (1, 2), "bad proto version"
     assert zlib.crc32(buf[:28]) & 0xFFFFFFFF == crc, "crc mismatch"
     return dict(page_size=page_size, spare_size=spare_size, pages_per_block=ppb,
                 total_blocks=total_blocks, total_pages=total_pages, mfr_id=mfr,
-                dev_id=dev, page_addr_bits=pab, flags=flags, total_bytes=total_bytes)
+                dev_id=dev, page_addr_bits=pab, flags=flags, total_bytes=total_bytes,
+                proto_version=ver)
 
 
 def recv_exact(sock, n):
@@ -52,16 +64,83 @@ def recv_exact(sock, n):
     return buf
 
 
-def write_metadata(out_path, geom, byte_count):
+def receive_pages(sock, geom, fout, progress=None):
+    """Stream a dump off `sock` into file object `fout`.
+
+    Proto v2 (FLAG_PAGECRC set): each page arrives as [page_size data bytes]
+    [4-byte CRC32 of that data]. We verify the seal, record any page whose CRC
+    mismatches in `bad_pages`, and ALWAYS write the data (even when bad) so a
+    later majority vote across dumps still has the bytes. Proto v1: a raw byte
+    stream with no per-page seal.
+
+    `progress`, if given, is called as progress(pages_received, bytes_received).
+    Returns a ReceiveResult. Sets `truncated` if the stream ended early.
+    """
+    page_size = geom["page_size"]
+    total_pages = geom["total_pages"]
+    total_bytes = geom["total_bytes"]
+
+    if geom["flags"] & FLAG_PAGECRC:
+        bad_pages, pages_received, bytes_received, truncated = [], 0, 0, False
+        for i in range(total_pages):
+            try:
+                frame = recv_exact(sock, page_size + 4)
+            except (socket.timeout, OSError):
+                truncated = True
+                break
+            data = frame[:page_size]
+            (crc_rx,) = struct.unpack("<I", frame[page_size:])
+            if zlib.crc32(data) & 0xFFFFFFFF != crc_rx:
+                bad_pages.append(i)
+            fout.write(data)
+            pages_received += 1
+            bytes_received += page_size
+            if progress:
+                progress(pages_received, bytes_received)
+        return ReceiveResult(bytes_received, pages_received, bad_pages, truncated)
+
+    # Proto v1: unframed byte stream.
+    bytes_received, truncated = 0, False
+    while bytes_received < total_bytes:
+        try:
+            chunk = sock.recv(min(65536, total_bytes - bytes_received))
+        except socket.timeout:
+            truncated = True
+            break
+        if not chunk:
+            truncated = True
+            break
+        fout.write(chunk)
+        bytes_received += len(chunk)
+        if progress:
+            progress(bytes_received // page_size, bytes_received)
+    return ReceiveResult(bytes_received, bytes_received // page_size, [], truncated)
+
+
+def write_badpages(out_path, bad_pages, total_pages):
+    """Write the <out_path>.badpages.json sidecar listing pages that failed
+    their CRC seal. Only called when there is at least one bad page."""
+    with open(out_path + ".badpages.json", "w") as f:
+        json.dump({"total_pages": total_pages,
+                   "bad_page_count": len(bad_pages),
+                   "bad_pages": bad_pages}, f)
+
+
+def write_metadata(out_path, geom, byte_count, result=None):
     """Write the <out_path>.meta.json sidecar next to the dump."""
     meta = {
         "geometry": geom,
-        "ecc_on": bool(geom["flags"] & 0x01),
-        "quad": bool(geom["flags"] & 0x02),
-        "verify": bool(geom["flags"] & 0x04),
+        "ecc_on": bool(geom["flags"] & FLAG_ECC_ON),
+        "quad": bool(geom["flags"] & FLAG_QUAD),
+        "verify": bool(geom["flags"] & FLAG_VERIFY),
+        "page_crc": bool(geom["flags"] & FLAG_PAGECRC),
+        "proto_version": geom.get("proto_version"),
         "bytes_received": byte_count,
         "timestamp": datetime.datetime.now().isoformat(),
     }
+    if result is not None:
+        meta["bad_page_count"] = len(result.bad_pages)
+        meta["truncated"] = result.truncated
     with open(out_path + ".meta.json", "w") as f:
         json.dump(meta, f, indent=2)
 
@@ -85,45 +164,48 @@ def main():
 
     geom = parse_header(recv_exact(sock, HEADER_SIZE))
     total_bytes = geom["total_bytes"]
+    total_mb = total_bytes / (1024 * 1024)
     page_size = geom["page_size"]
+    pagecrc = bool(geom["flags"] & FLAG_PAGECRC)
     print(f"[*] Chip 0x{geom['mfr_id']:02X} 0x{geom['dev_id']:02X} | "
           f"{geom['total_blocks']} blocks x {geom['pages_per_block']} x {page_size} B "
-          f"| ECC {'on' if geom['flags'] & 1 else 'off'} "
-          f"| {'quad' if geom['flags'] & 2 else 'single'}")
-    print(f"[*] Expecting {total_bytes / (1024*1024):.2f} MB.")
+          f"| ECC {'on' if geom['flags'] & FLAG_ECC_ON else 'off'} "
+          f"| {'quad' if geom['flags'] & FLAG_QUAD else 'single'}")
+    print(f"[*] Proto v{geom['proto_version']} | "
+          f"per-page CRC {'on' if pagecrc else 'off'} | expecting {total_mb:.2f} MB.")
 
     start_time = time.time()
-    bytes_received = 0
+
+    def progress(pages_done, bytes_done):
+        if pages_done % PROGRESS_INTERVAL:
+            return
+        mb = bytes_done / (1024 * 1024)
+        el = time.time() - start_time
+        spd = mb / el if el > 0 else 0
+        print(f"\r[>] {mb:.1f} / {total_mb:.0f} MB "
+              f"({bytes_done / total_bytes * 100:.1f}%) - {spd:.2f} MB/s",
+              end="", flush=True)
+
     try:
         with open(out_file, 'wb') as f:
-            while bytes_received < total_bytes:
-                try:
-                    chunk = sock.recv(min(65536, total_bytes - bytes_received))
-                except socket.timeout:
-                    print("\n[!] Socket timeout! ESP32 stopped sending.")
-                    break
-                if not chunk:
-                    print("\n[!] Connection closed by ESP32.")
-                    break
-                f.write(chunk)
-                prev_page = bytes_received // page_size
-                bytes_received += len(chunk)
-                cur_page = bytes_received // page_size
-                if cur_page // PROGRESS_INTERVAL > prev_page // PROGRESS_INTERVAL:
-                    mb = bytes_received / (1024 * 1024)
-                    pct = bytes_received / total_bytes * 100
-                    el = time.time() - start_time
-                    spd = mb / el if el > 0 else 0
-                    print(f"\r[>] {mb:.1f} / {total_bytes/(1024*1024):.0f} MB "
-                          f"({pct:.1f}%) - {spd:.2f} MB/s", end="", flush=True)
+            res = receive_pages(sock, geom, f, progress)
 
-        write_metadata(out_file, geom, bytes_received)
+        write_metadata(out_file, geom, res.bytes_received, res)
         el = time.time() - start_time
         print(f"\n[*] Dump complete! Saved to {out_file}")
         print(f"[*] Metadata: {out_file}.meta.json")
-        print(f"[*] Received {bytes_received} bytes in {el:.1f}s")
-        if bytes_received < total_bytes:
-            print(f"[!] WARNING: expected {total_bytes} but got {bytes_received}")
+        print(f"[*] Received {res.bytes_received} bytes "
+              f"({res.pages_received}/{geom['total_pages']} pages) in {el:.1f}s")
+        if res.truncated or res.bytes_received < total_bytes:
+            print(f"[!] WARNING: truncated — expected {total_bytes} "
+                  f"but got {res.bytes_received} bytes.")
+        if pagecrc:
+            if res.bad_pages:
+                write_badpages(out_file, res.bad_pages, geom["total_pages"])
+                print(f"[!] {len(res.bad_pages)} page(s) FAILED their CRC seal — "
+                      f"see {out_file}.badpages.json")
+            else:
+                print("[+] All pages passed their CRC seal.")
     finally:
         sock.close()
 

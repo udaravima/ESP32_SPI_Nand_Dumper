@@ -347,7 +347,8 @@ void cmd_dump(bool verify) {
   uint32_t total_pages = (uint32_t)cfg_total_blocks * cfg_pages_per_block;
   uint32_t total_bytes = total_pages * (uint32_t)cfg_page_size;
 
-  uint8_t *page_buf = (uint8_t *)heap_caps_malloc(cfg_page_size, MALLOC_CAP_DMA);
+  // +4 bytes hold the per-page CRC32 seal appended after the page data.
+  uint8_t *page_buf = (uint8_t *)heap_caps_malloc(cfg_page_size + 4, MALLOC_CAP_DMA);
   if (!page_buf) { Serial.println("[!] Buffer alloc failed!"); return; }
 
   // ---- Send the 32-byte geometry header so the PC self-configures ----
@@ -363,15 +364,22 @@ void cmd_dump(bool verify) {
   geo.page_addr_bits  = cfg_page_addr_bits;
   geo.flags = (cfg_ecc_on ? DUMP_FLAG_ECC_ON : 0)
             | (cfg_read_mode == NAND_READ_QUAD ? DUMP_FLAG_QUAD : 0)
-            | (cfg_verify ? DUMP_FLAG_VERIFY : 0);
+            | (cfg_verify ? DUMP_FLAG_VERIFY : 0)
+            | DUMP_FLAG_PAGECRC;
   uint8_t hdr[DUMP_HEADER_SIZE];
   dump_header_pack(hdr, &geo);
-  wifi_transport_send(hdr, sizeof(hdr));
+  if (wifi_transport_send(hdr, sizeof(hdr)) != sizeof(hdr)) {
+    Serial.println("[!] Client dropped during header; aborting dump.");
+    wifi_transport_close();
+    free(page_buf);
+    return;
+  }
 
   unsigned long startTime = millis();
   uint32_t pagesDone = 0, retryCount = 0, failedPages = 0;
 
-  for (int block = 0; block < cfg_total_blocks; block++) {
+  bool aborted = false;
+  for (int block = 0; block < cfg_total_blocks && !aborted; block++) {
     for (int page = 0; page < cfg_pages_per_block; page++) {
       uint32_t row = nand_row_addr(block, page, cfg_page_addr_bits);
 
@@ -384,7 +392,21 @@ void cmd_dump(bool verify) {
         nand_read_cache(page_buf, cfg_page_size);
       }
 
-      wifi_transport_send(page_buf, cfg_page_size);
+      // Seal the page: CRC32 over the data, appended little-endian, sent in one
+      // write. The PC re-checks it, so any ESP->PC wire corruption or truncation
+      // is caught and pinned to this page instead of passing silently.
+      uint32_t crc = dump_crc32(page_buf, cfg_page_size);
+      page_buf[cfg_page_size + 0] = (uint8_t)crc;
+      page_buf[cfg_page_size + 1] = (uint8_t)(crc >> 8);
+      page_buf[cfg_page_size + 2] = (uint8_t)(crc >> 16);
+      page_buf[cfg_page_size + 3] = (uint8_t)(crc >> 24);
+
+      size_t frame_len = (size_t)cfg_page_size + 4;
+      if (wifi_transport_send(page_buf, frame_len) != frame_len) {
+        Serial.printf("[!] Send failed at page %u (client gone?); aborting dump.\n", pagesDone);
+        aborted = true;
+        break;
+      }
       pagesDone++;
 
       if (pagesDone % 1024 == 0) {
@@ -400,6 +422,12 @@ void cmd_dump(bool verify) {
 
   wifi_transport_close();
   free(page_buf);
+
+  if (aborted) {
+    Serial.printf("[!] Dump aborted after %u/%u pages (client disconnected).\n",
+                  pagesDone, total_pages);
+    return;
+  }
 
   unsigned long elapsed = (millis() - startTime) / 1000;
   float totalMB = total_bytes / (1024.0 * 1024.0);

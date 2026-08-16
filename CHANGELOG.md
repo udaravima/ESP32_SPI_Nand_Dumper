@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project aims to
 follow [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Post-3.0 work, verified on real MT29F2G01 silicon plus the automated suites.
+
+### Added
+- **Per-page CRC32 integrity (wire proto v2).** Each page is now sealed with a
+  CRC32 the PC re-checks; failures are pinned to a page index in a
+  `<dump>.badpages.json` sidecar (data still written, so majority vote keeps every
+  byte). Turns a silently-corrupt dump — the `dump2` failure mode — into a loud,
+  localized one. `dump.py` still accepts v1 dumps.
+- **Re-dumpable serve loop** — the dumper serves each new client without an ESP
+  reset between dumps; `'M'` in the serial console re-opens the config menu live.
+
+### Changed
+- Wire protocol version bumped `1` → `2`; header flag bit3 signals per-page CRC.
+
+### Fixed
+- **SPI clock is now actually applied.** The menu-selected clock was set but never
+  pushed to the SPI device, pinning every dump to 1 MHz (~0.05 MB/s). Added
+  `nand_set_clock()`; a 10 MHz dump is now bit-identical across runs and ~20–40×
+  faster.
+- **Graceful mid-dump disconnect.** `cmd_dump` now checks each send and aborts
+  cleanly back to the wait state instead of streaming into a dead socket.
+
 ## [3.0.0] - 2026-08-16
 
 Chip-agnostic release. Auto-detects the SPI NAND chip, adds ESP32-S3 support, and

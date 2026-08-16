@@ -100,13 +100,13 @@ through the GPIO matrix instead of IOMUX is fine if you can't hit the IOMUX pins
 ## The wire protocol
 
 After the client sends the `'G'` trigger, the firmware sends a **32-byte
-little-endian header** before the page stream, then the raw pages back to back.
+little-endian header**, then the page stream.
 
 | Offset | Size | Field |
 |---|---|---|
 | 0 | 6 | magic `"NANDMP"` |
-| 6 | 1 | proto version (`1`) |
-| 7 | 1 | flags: bit0 ECC on, bit1 quad, bit2 verify |
+| 6 | 1 | proto version (`2`) |
+| 7 | 1 | flags: bit0 ECC on, bit1 quad, bit2 verify, bit3 per-page CRC |
 | 8 | 2 | page_size |
 | 10 | 2 | spare_size |
 | 12 | 2 | pages_per_block |
@@ -122,6 +122,17 @@ little-endian header** before the page stream, then the raw pages back to back.
 The `flags` field reflects the **actual** run — if quad fell back to single, the
 quad bit is 0. The CRC32 is the standard reflected polynomial (`0xEDB88320`), so
 it matches Python `zlib.crc32`.
+
+**Page framing (proto v2).** With the per-page-CRC flag set (bit3, always on in
+current firmware), each page is sent as `[page_size data bytes][4-byte CRC32 of
+that data, little-endian]` in a single write. `dump.py` re-computes the CRC per
+page: on a mismatch it records the page index in a `<dump>.badpages.json` sidecar
+but **still writes the data**, so a later majority vote across dumps keeps every
+byte. This seals the ESP→PC path — a garbled or truncated page is caught and
+pinned to its index instead of passing silently as it did in the `dump2` incident.
+It does *not* catch corruption on the chip→ESP read (a CRC over garbage is still a
+valid CRC); on-die ECC and its status bits guard that half. A v1 dump — a raw,
+unframed byte stream — is still accepted by `dump.py` for backward compatibility.
 
 **The header is packed in C** ([`dump_header.cpp`](../src/dump_header.cpp)) **and
 parsed in Python** ([`dump.py`](../dump.py)). Because two implementations must
