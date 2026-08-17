@@ -32,6 +32,8 @@ be verified on real silicon.
 | [`dump_header.h`](../src/dump_header.h) / [`.cpp`](../src/dump_header.cpp) | 32-byte geometry header pack + CRC32 | ✅ host-testable |
 | [`config_store.h`](../src/config_store.h) / [`.cpp`](../src/config_store.cpp) | `nand_app_config_t`; `config_defaults()` / `config_validate()` clamp | ✅ host-testable |
 | [`config_nvs.cpp`](../src/config_nvs.cpp) | `config_load()` / `config_save()` — NVS blob via `Preferences` | ❌ hardware |
+| [`sys_info.h`](../src/sys_info.h) / [`.cpp`](../src/sys_info.cpp) | `sys_recommend_batch_pages()` — memory-aware batch sizing | ✅ host-testable |
+| [`sys_info_esp.cpp`](../src/sys_info_esp.cpp) | `sys_info_report()` / `sys_free_dma_bytes()` — runtime chip/heap query | ❌ hardware |
 | [`board_pins.h`](../src/board_pins.h) | Per-target pins + `NAND_SPI_HOST` | — macros |
 | [`nand_driver.h`](../src/nand_driver.h) / [`.cpp`](../src/nand_driver.cpp) | SPI transactions: reset, feature regs, page read, cache read, ECC toggle, verify, quad self-test | ❌ hardware |
 | [`wifi_transport.h`](../src/wifi_transport.h) / [`.cpp`](../src/wifi_transport.cpp) | WiFi connect + TCP stream | ❌ hardware |
@@ -48,7 +50,8 @@ size → WiFi → send the geometry header → stream pages.
 |---|---|
 | [`dump.py`](../dump.py) | Receive the stream; `parse_header`, `recv_exact`, `write_metadata`; network flow under `main()` |
 | [`ecc_stripper.py`](../ecc_stripper.py) | `strip()` spare/OOB → main-area image; `load_geometry()` from the sidecar |
-| [`tools/binary_compare_fix.py`](../tools/binary_compare_fix.py) | Majority-vote repair across multiple dumps |
+| [`verify_dump.py`](../verify_dump.py) | CRC-verdict health report + CRC-aware cross-dump repair (`choose_page_sources`, `majority_bytes`) |
+| [`tools/binary_compare_fix.py`](../tools/binary_compare_fix.py) | Majority-vote repair across multiple dumps (byte-level, no CRC verdicts) |
 | [`tools/gen_chips.py`](../tools/gen_chips.py) | Validate `chips.yml`, emit the C table |
 
 The Python entry points all guard their side effects behind `if __name__ ==

@@ -33,6 +33,14 @@ PROGRESS_INTERVAL = 1024      # print progress every N pages
 # =======================================
 
 
+def format_duration(seconds):
+    """Format a duration as H:MM:SS, or MM:SS when under an hour."""
+    seconds = int(seconds)
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}"
+
+
 def load_config(path=CONFIG_PATH):
     """Return the saved config dict, or {} if missing/unreadable/corrupt."""
     try:
@@ -238,9 +246,11 @@ def main(argv=None):
             return
         mb = bytes_done / (1024 * 1024)
         el = time.time() - start_time
-        spd = mb / el if el > 0 else 0
-        print(f"\r[>] {mb:.1f} / {total_mb:.0f} MB "
-              f"({bytes_done / total_bytes * 100:.1f}%) - {spd:.2f} MB/s",
+        rate = bytes_done / el if el > 0 else 0            # bytes/sec
+        eta = (total_bytes - bytes_done) / rate if rate > 0 else 0
+        print(f"\r[>] {mb:.1f}/{total_mb:.0f} MB "
+              f"({bytes_done / total_bytes * 100:.1f}%) {rate / (1024*1024):.2f} MB/s | "
+              f"elapsed {format_duration(el)} | ETA {format_duration(eta)}   ",
               end="", flush=True)
 
     try:
@@ -249,10 +259,12 @@ def main(argv=None):
 
         write_metadata(out_file, geom, res.bytes_received, res)
         el = time.time() - start_time
+        avg = res.bytes_received / el / (1024 * 1024) if el > 0 else 0
         print(f"\n[*] Dump complete! Saved to {out_file}")
         print(f"[*] Metadata: {out_file}.meta.json")
         print(f"[*] Received {res.bytes_received} bytes "
-              f"({res.pages_received}/{geom['total_pages']} pages) in {el:.1f}s")
+              f"({res.pages_received}/{geom['total_pages']} pages) in "
+              f"{format_duration(el)} ({avg:.2f} MB/s avg)")
         if res.truncated or res.bytes_received < total_bytes:
             print(f"[!] WARNING: truncated — expected {total_bytes} "
                   f"but got {res.bytes_received} bytes.")

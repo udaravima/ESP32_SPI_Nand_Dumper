@@ -45,3 +45,11 @@ def test_load_corrupt_file_returns_empty(tmp_path):
     p = tmp_path / "dump.config.json"
     p.write_text("{ this is not json")
     assert dump.load_config(str(p)) == {}
+
+
+def test_format_duration():
+    assert dump.format_duration(0) == "00:00"
+    assert dump.format_duration(5) == "00:05"
+    assert dump.format_duration(65) == "01:05"
+    assert dump.format_duration(3661) == "1:01:01"
+    assert dump.format_duration(59.9) == "00:59"   # truncates, no rounding up

@@ -59,6 +59,27 @@ Long breadboard wires are the #1 cause of read errors at higher clocks. Keep the
 short, add a 100 nF decoupling capacitor across VCC/GND near the chip, and if you
 see mismatches drop the SPI clock (the menu defaults to a safe 1 MHz).
 
+### Write protection (belt and suspenders)
+
+The firmware is **provably read-only** — it issues only read/reset/feature opcodes
+and never sends WRITE ENABLE (06h), PROGRAM, or ERASE — and the chip powers up with
+all blocks locked (BP bits set, WEL = 0). So the software alone cannot modify the
+chip. If you want hardware to back that up:
+
+- **10 kΩ pull-up on CS# to 3V3 (recommended).** During ESP32 boot/reset the GPIOs
+  float briefly; a pull-up keeps the chip *deselected* through that window, so no
+  bus noise can be latched as a command. GPIO5 is a strapping pin (often already
+  pulled up) but an explicit resistor makes it certain.
+- **Tie WP# low to freeze the block-lock bits (single mode only).** Per the
+  datasheet, WP# low provides "hardware write protection to freeze BP bits" — it
+  stops any command from *unlocking* the already-locked blocks. **Caveat / trap:**
+  WP# and HOLD# double as the SIO2/SIO3 data lines in **quad** mode, so this only
+  applies when reading single-x1. In quad you cannot use WP# for protection — rely
+  on the read-only firmware and the power-on lock instead.
+
+Because the firmware sends no write/erase, these are extra insurance, not a
+prerequisite for safe dumping.
+
 ## Building and flashing
 
 ```bash
@@ -86,11 +107,20 @@ The menu shows the detected chip and lets you change settings without reflashing
   [1] WiFi SSID / [2] Password / [3] TCP Port
   -- SPI --
   [4] SPI Clock / [5] Read Mode / [6] Verify / [7] Max Retries
+  [B] Batch pages/write: 1 (per-page)
   [E] ECC on read:  OFF (raw)
   -- NAND Geometry --
   [8] Page Size / [9] Pages/Block / [0] Total Blocks
   [S] START
 ```
+
+Settings are saved to the ESP32's NVS on **[S]**, so later boots skip re-entry.
+At boot the firmware also prints a **runtime capability report** (chip model,
+cores, clock, free heap/PSRAM, flash) — queried live, so the same binary adapts to
+any ESP32 variant. **[B] Batch pages/write** is a throughput knob: it coalesces
+that many page-frames into one TCP write (1 = per-page). Higher values cut
+per-write overhead when WiFi is the bottleneck; the value is auto-clamped to what
+the board's free memory can hold. Try a few and watch the MB/s to find your best.
 
 | Option | What it controls |
 |---|---|
@@ -211,6 +241,18 @@ python3 tools/binary_compare_fix.py dump1.bin dump2.bin dump3.bin \
 With 3+ files it fixes each disagreeing byte by majority vote and writes a report
 listing every byte that differed and which files were wrong. With 2 files it can
 only flag differences, not resolve them.
+
+**CRC-aware repair (preferred for proto-v2 dumps).** Because each page now carries
+a CRC verdict recorded in `<dump>.badpages.json`, `verify_dump.py` can do something
+smarter than blind majority: for each page it takes a copy that *passed* its CRC,
+and only majority-votes where every dump flagged the page bad.
+
+```bash
+python3 verify_dump.py dump.bin                       # health report for one dump
+python3 verify_dump.py d1.bin d2.bin d3.bin -o fixed.bin   # CRC-aware repair
+```
+
+It reports how many pages came from a known-good copy vs needed majority voting.
 
 ## Understanding the raw layout
 

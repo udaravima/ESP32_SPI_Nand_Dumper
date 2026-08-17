@@ -15,12 +15,28 @@ Post-3.0 work, verified on real MT29F2G01 silicon plus the automated suites.
   byte). Turns a silently-corrupt dump — the `dump2` failure mode — into a loud,
   localized one. `dump.py` still accepts v1 dumps.
 - **Persistent settings.** The ESP32 saves its config (WiFi creds, port, SPI
-  clock, read mode, verify, ECC, retries) to NVS on every menu exit and reloads it
-  on boot — geometry stays auto-detected. `dump.py` gains `--ip`/`--port`/
+  clock, read mode, verify, ECC, retries, batch size) to NVS on every menu exit and
+  reloads it on boot — geometry stays auto-detected. `dump.py` gains `--ip`/`--port`/
   `--out-dir`, remembered in a local (gitignored) `dump.config.json` so flags are
   needed only once. A `config_validate()` clamp guards against corrupt NVS records.
+- **Runtime capability report + self-sizing.** At boot the firmware prints the
+  chip model, cores, clock, free heap/PSRAM, and flash — all queried live, so the
+  same binary runs on any ESP32 variant without board edits. The send buffer is
+  sized from the detected free heap.
+- **Throughput knob (`[B]` batch pages/write).** Coalesces N page-frames into one
+  TCP write to cut per-write overhead; runtime-selectable so you can benchmark and
+  pick the best for your link, auto-clamped to available memory.
+- **`verify_dump.py`.** CRC-verdict health report for a dump, plus CRC-aware
+  cross-dump repair: each page is taken from a copy that passed its CRC, with
+  majority voting only where every dump flagged the page bad.
 - **Re-dumpable serve loop** — the dumper serves each new client without an ESP
   reset between dumps; `'M'` in the serial console re-opens the config menu live.
+- **`dump.py` progress** now shows elapsed time and ETA, and the summary reports
+  average throughput.
+
+### Documentation
+- Hardware **write-protection** guidance (CS# pull-up, WP# tie for single mode)
+  added to the User Guide.
 
 ### Security
 - **WiFi credentials no longer ship in source** — compiled defaults are empty;
