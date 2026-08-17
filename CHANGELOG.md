@@ -6,7 +6,10 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
-Post-3.0 work, verified on real MT29F2G01 silicon plus the automated suites.
+## [3.1.0] - 2026-08-17
+
+Integrity, persistence, and portability. Verified on real MT29F2G01 silicon plus
+the automated suites (host pytest + native Unity, dual-target compilation).
 
 ### Added
 - **Per-page CRC32 integrity (wire proto v2).** Each page is now sealed with a

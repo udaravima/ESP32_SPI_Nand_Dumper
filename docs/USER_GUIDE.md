@@ -101,7 +101,7 @@ pio device monitor -b 115200
 The menu shows the detected chip and lets you change settings without reflashing:
 
 ```
-  ESP32 SPI NAND Dumper v3.0 — Config
+  ESP32 SPI NAND Dumper v3.1.0 — Config
   Detected: MT29F2G01ABAGD (0x2C 0x24)
   -- Network --
   [1] WiFi SSID / [2] Password / [3] TCP Port

@@ -91,7 +91,7 @@ void show_menu() {
 
   Serial.println();
   Serial.println("========================================");
-  Serial.println("  ESP32 SPI NAND Dumper v3.0 — Config");
+  Serial.println("  ESP32 SPI NAND Dumper v3.1.0 — Config");
   Serial.println("========================================");
   if (g_chip) Serial.printf("  Detected: %s (0x%02X 0x%02X)\n",
                             g_chip->name, g_chip_id >> 8, g_chip_id & 0xFF);
@@ -321,7 +321,7 @@ void setup() {
   delay(500);
 
   Serial.println("\n========================================");
-  Serial.println("  ESP32 SPI NAND Dumper v3.0");
+  Serial.println("  ESP32 SPI NAND Dumper v3.1.0");
   Serial.println("  Auto-detect + WiFi TCP");
   Serial.println("========================================");
 
