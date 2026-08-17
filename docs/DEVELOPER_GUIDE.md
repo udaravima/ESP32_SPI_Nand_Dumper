@@ -30,6 +30,8 @@ be verified on real silicon.
 | `nand_chips_generated.h` | Generated `CHIPS[]` table (do not edit) | ✅ data |
 | [`nand_addr.h`](../src/nand_addr.h) | `nand_row_addr()` — 32-bit row from block/page | ✅ host-testable |
 | [`dump_header.h`](../src/dump_header.h) / [`.cpp`](../src/dump_header.cpp) | 32-byte geometry header pack + CRC32 | ✅ host-testable |
+| [`config_store.h`](../src/config_store.h) / [`.cpp`](../src/config_store.cpp) | `nand_app_config_t`; `config_defaults()` / `config_validate()` clamp | ✅ host-testable |
+| [`config_nvs.cpp`](../src/config_nvs.cpp) | `config_load()` / `config_save()` — NVS blob via `Preferences` | ❌ hardware |
 | [`board_pins.h`](../src/board_pins.h) | Per-target pins + `NAND_SPI_HOST` | — macros |
 | [`nand_driver.h`](../src/nand_driver.h) / [`.cpp`](../src/nand_driver.cpp) | SPI transactions: reset, feature regs, page read, cache read, ECC toggle, verify, quad self-test | ❌ hardware |
 | [`wifi_transport.h`](../src/wifi_transport.h) / [`.cpp`](../src/wifi_transport.cpp) | WiFi connect + TCP stream | ❌ hardware |

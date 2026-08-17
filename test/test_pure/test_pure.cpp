@@ -3,6 +3,7 @@
 #include "nand_chips.h"
 #include "nand_addr.h"
 #include "dump_header.h"
+#include "config_store.h"
 
 void test_lookup_finds_micron(void) {
   const nand_chip_t *c = nand_chip_lookup(0x2C, 0x24);
@@ -58,6 +59,36 @@ void test_crc32_canonical_check_value(void) {
   TEST_ASSERT_EQUAL_UINT32(0xCBF43926u, dump_crc32(msg, 9));
 }
 
+void test_config_defaults_have_empty_wifi(void) {
+  nand_app_config_t c;
+  config_defaults(&c);
+  TEST_ASSERT_EQUAL_STRING("", c.ssid);     // no password shipped in source
+  TEST_ASSERT_EQUAL_STRING("", c.pass);
+  TEST_ASSERT_EQUAL_UINT16(3333, c.tcp_port);
+  TEST_ASSERT_EQUAL_INT32(1000000, c.spi_clock_hz);
+  TEST_ASSERT_TRUE(c.verify);
+  TEST_ASSERT_FALSE(c.ecc_on);
+}
+
+void test_config_validate_clamps_garbage(void) {
+  nand_app_config_t c;
+  config_defaults(&c);
+  c.tcp_port = 0; c.spi_clock_hz = 999999999; c.read_mode = 200; c.max_retries = 5000;
+  config_validate(&c);
+  TEST_ASSERT_EQUAL_UINT16(3333, c.tcp_port);
+  TEST_ASSERT_EQUAL_INT32(CONFIG_CLOCK_MAX_HZ, c.spi_clock_hz);
+  TEST_ASSERT_EQUAL_UINT8(0, c.read_mode);
+  TEST_ASSERT_EQUAL_INT32(CONFIG_RETRIES_MAX, c.max_retries);
+}
+
+void test_config_validate_raises_too_low_clock(void) {
+  nand_app_config_t c;
+  config_defaults(&c);
+  c.spi_clock_hz = 50;   // below the floor
+  config_validate(&c);
+  TEST_ASSERT_EQUAL_INT32(CONFIG_CLOCK_MIN_HZ, c.spi_clock_hz);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_lookup_finds_micron);
@@ -67,5 +98,8 @@ int main(int, char **) {
   RUN_TEST(test_row_addr_masks_page_field);
   RUN_TEST(test_header_pack_layout_and_crc);
   RUN_TEST(test_crc32_canonical_check_value);
+  RUN_TEST(test_config_defaults_have_empty_wifi);
+  RUN_TEST(test_config_validate_clamps_garbage);
+  RUN_TEST(test_config_validate_raises_too_low_clock);
   return UNITY_END();
 }

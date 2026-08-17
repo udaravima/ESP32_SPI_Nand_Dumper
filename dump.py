@@ -9,6 +9,7 @@ Usage:
 
 Set ESP32_IP to the address printed in the ESP32 serial monitor.
 """
+import argparse
 import socket
 import struct
 import zlib
@@ -20,10 +21,46 @@ import datetime
 from collections import namedtuple
 
 # ============ CONFIGURATION ============
-ESP32_IP = '10.65.224.57'   # <-- UPDATE THIS (from the serial monitor)
-TCP_PORT = 3333
+# Precedence at runtime: CLI flag > dump.config.json > these defaults.
+# Pass --ip/--port once and they are remembered in dump.config.json (local,
+# gitignored) so later runs need no flags.
+DEFAULT_IP = '10.65.224.57'   # first-run fallback; override with --ip
+DEFAULT_PORT = 3333
+DEFAULT_OUT_DIR = 'target'
+CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           'dump.config.json')
 PROGRESS_INTERVAL = 1024      # print progress every N pages
 # =======================================
+
+
+def load_config(path=CONFIG_PATH):
+    """Return the saved config dict, or {} if missing/unreadable/corrupt."""
+    try:
+        with open(path) as f:
+            d = json.load(f)
+        return d if isinstance(d, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def save_config(path, cfg):
+    """Persist the resolved connection settings for next time."""
+    with open(path, 'w') as f:
+        json.dump(cfg, f, indent=2)
+
+
+def resolve_config(cli, saved):
+    """Merge with precedence CLI > saved > default. A None in `cli` (argparse
+    leaves unspecified flags None) is ignored so it can't clobber a saved value."""
+    def pick(key, default):
+        if cli.get(key) is not None:
+            return cli[key]
+        if saved.get(key) is not None:
+            return saved[key]
+        return default
+    return {"ip": pick("ip", DEFAULT_IP),
+            "port": pick("port", DEFAULT_PORT),
+            "out_dir": pick("out_dir", DEFAULT_OUT_DIR)}
 
 HEADER_FMT = "<6sBBHHHHIBBBBII"
 HEADER_SIZE = 32
@@ -145,16 +182,36 @@ def write_metadata(out_path, geom, byte_count, result=None):
         json.dump(meta, f, indent=2)
 
 
-def main():
-    out_file = ('target/nand_raw_dump_'
-                + datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + '.bin')
+def parse_args(argv=None):
+    ap = argparse.ArgumentParser(
+        description="ESP32 SPI NAND dumper — PC-side TCP receiver.")
+    ap.add_argument("--ip", help="ESP32 IP address (shown in the serial monitor).")
+    ap.add_argument("--port", type=int, help="TCP port (default 3333).")
+    ap.add_argument("--out-dir", dest="out_dir",
+                    help="Directory for dumps (default target/).")
+    return ap.parse_args(argv)
+
+
+def main(argv=None):
+    args = parse_args(argv)
+    cli = {"ip": args.ip, "port": args.port, "out_dir": args.out_dir}
+    cfg = resolve_config(cli, load_config())
+    # Any flag the user passed is remembered, so next run needs no flags.
+    if any(v is not None for v in cli.values()):
+        save_config(CONFIG_PATH, cfg)
+        print(f"[*] Saved connection settings to {os.path.basename(CONFIG_PATH)}")
+    ip, port, out_dir = cfg["ip"], cfg["port"], cfg["out_dir"]
+
+    out_file = os.path.join(
+        out_dir, 'nand_raw_dump_'
+        + datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + '.bin')
     os.makedirs(os.path.dirname(out_file) or '.', exist_ok=True)
 
-    print(f"[*] Connecting to ESP32 at {ESP32_IP}:{TCP_PORT}...")
+    print(f"[*] Connecting to ESP32 at {ip}:{port}...")
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         sock.settimeout(30)
-        sock.connect((ESP32_IP, TCP_PORT))
+        sock.connect((ip, port))
     except Exception as e:
         print(f"[!] Could not connect: {e}")
         sys.exit(1)

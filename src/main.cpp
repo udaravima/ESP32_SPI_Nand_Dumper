@@ -4,12 +4,15 @@
 #include "nand_addr.h"
 #include "dump_header.h"
 #include "wifi_transport.h"
+#include "config_store.h"
 
 #define MAX_PAGE_SIZE 8192  // upper bound for buffer/transfer sizing
 
 // ============ RUNTIME CONFIG (defaults) ============
-static char     cfg_ssid[64]     = "GAE";
-static char     cfg_pass[64]     = "omgRoopa1!";
+// WiFi creds start empty: entered once via the menu, then persisted to NVS, so
+// no password ships in source. NVS overrides these on boot if a config exists.
+static char     cfg_ssid[64]     = "";
+static char     cfg_pass[64]     = "";
 static uint16_t cfg_tcp_port     = 3333;
 static int      cfg_spi_clock_hz = 1000000;    // 1 MHz
 static nand_read_mode_t cfg_read_mode = NAND_READ_SINGLE;
@@ -260,6 +263,45 @@ void apply_runtime_settings() {
                 cfg_spi_clock_hz);
 }
 
+// Load persisted settings from NVS over the current globals. Called AFTER chip
+// detection so saved behaviour (clock/read/verify/ecc/WiFi) overrides the chip
+// defaults, while geometry stays whatever detection set. On first boot (nothing
+// saved) the globals keep their detected/compiled values.
+void load_persisted_config() {
+  nand_app_config_t c;
+  config_defaults(&c);
+  if (config_load(&c)) {
+    strncpy(cfg_ssid, c.ssid, sizeof(cfg_ssid) - 1); cfg_ssid[sizeof(cfg_ssid) - 1] = '\0';
+    strncpy(cfg_pass, c.pass, sizeof(cfg_pass) - 1); cfg_pass[sizeof(cfg_pass) - 1] = '\0';
+    cfg_tcp_port     = c.tcp_port;
+    cfg_spi_clock_hz = c.spi_clock_hz;
+    cfg_read_mode    = (nand_read_mode_t)c.read_mode;
+    cfg_verify       = c.verify;
+    cfg_ecc_on       = c.ecc_on;
+    cfg_max_retries  = c.max_retries;
+    Serial.println("[*] Loaded saved settings from NVS.");
+  } else {
+    Serial.println("[*] No saved settings yet — enter WiFi in the menu; it is saved on 'S'.");
+  }
+}
+
+// Snapshot the current globals into NVS. Called whenever the menu is left.
+void persist_config() {
+  nand_app_config_t c;
+  memset(&c, 0, sizeof(c));
+  strncpy(c.ssid, cfg_ssid, sizeof(c.ssid) - 1);
+  strncpy(c.pass, cfg_pass, sizeof(c.pass) - 1);
+  c.tcp_port     = cfg_tcp_port;
+  c.spi_clock_hz = cfg_spi_clock_hz;
+  c.read_mode    = (uint8_t)cfg_read_mode;
+  c.verify       = cfg_verify;
+  c.ecc_on       = cfg_ecc_on;
+  c.max_retries  = cfg_max_retries;
+  config_validate(&c);
+  config_save(&c);
+  Serial.println("[*] Settings saved to NVS.");
+}
+
 // ============ SETUP ============
 
 void setup() {
@@ -296,8 +338,10 @@ void setup() {
                   g_chip_id >> 8, g_chip_id & 0xFF);
   }
 
-  // ---- Interactive config (pre-filled) ----
+  // ---- Load saved settings (over detected defaults), then configure ----
+  load_persisted_config();
   config_menu();
+  persist_config();
   apply_runtime_settings();
 
   // ---- WiFi transport (brought up once; stays up across dumps) ----
@@ -322,6 +366,7 @@ void loop() {
     if (c == 'M' || c == 'm') {
       while (Serial.available()) Serial.read();   // drain the rest of the line
       config_menu();
+      persist_config();
       apply_runtime_settings();
       Serial.println("    (SPI/geometry/ECC applied now; WiFi SSID/port changes still need a reset.)");
       announced = false;

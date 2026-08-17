@@ -141,11 +141,13 @@ case it quietly runs single.
 
 ## Running a dump
 
-1. In `dump.py`, set `ESP32_IP` to the address the serial monitor printed.
+1. Pass the address the serial monitor printed with `--ip` (remembered in a
+   local `dump.config.json` afterwards, so later runs need no flag):
 2. Run it:
 
    ```bash
-   python3 dump.py
+   python3 dump.py --ip 192.168.1.42   # first time
+   python3 dump.py                     # thereafter
    ```
 
 `dump.py` connects, sends the trigger, reads the geometry header the ESP32 sends,
@@ -231,4 +233,4 @@ Each raw page for the MT29F2G01 is **2176 bytes = 2048 main + 128 spare**:
 | Dump shorter than expected | Check the serial monitor for errors; verify power and wiring; retry at a lower clock |
 | `Detected: UNKNOWN` | Enter geometry via menu `8`/`9`/`0`, or add the chip to `chips.yml` |
 | WiFi won't connect | Re-check SSID/password (menu `1`/`2`) and that the board is in range |
-| `dump.py` can't connect | Confirm `ESP32_IP` matches the serial monitor and both are on the same network |
+| `dump.py` can't connect | Confirm `--ip` (or saved `dump.config.json`) matches the serial monitor and both are on the same network |

@@ -69,14 +69,15 @@ The menu shows the **detected chip** with geometry pre-filled:
   [S] START
 ```
 
-Change any field, toggle **[E]** for ECC (default OFF/raw), press **S** to start. No reflash needed to change settings.
+Change any field, toggle **[E]** for ECC (default OFF/raw), press **S** to start. Settings are saved to the ESP32's NVS, so later boots skip re-entry. No reflash needed to change settings.
 
 ### 3. Receive the dump
 
-Set `ESP32_IP` in `dump.py` to the IP printed in the serial monitor, then:
+Pass the IP printed in the serial monitor (remembered in `dump.config.json` after the first run):
 
 ```bash
-python3 dump.py
+python3 dump.py --ip 192.168.1.42   # first time
+python3 dump.py                     # thereafter
 ```
 
 It reads the geometry header, streams to `target/nand_raw_dump_<timestamp>.bin`, and writes a `<dump>.meta.json` sidecar describing the geometry and ECC state.

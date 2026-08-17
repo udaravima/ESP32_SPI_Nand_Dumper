@@ -6,3 +6,4 @@
 **.pyc
 target/
 lab/
+dump.config.json

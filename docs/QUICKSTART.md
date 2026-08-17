@@ -38,21 +38,19 @@ pio run -e esp32dev -t upload            # ESP32-classic
 pio device monitor -b 115200
 ```
 
-You'll see the chip auto-detected and a config menu. Note the **IP address**
-printed after WiFi connects. Defaults are fine for a first run — just press **S**
-to start. (Set WiFi with menu options `1`/`2` first if needed.)
+You'll see the chip auto-detected and a config menu. On a fresh board, set your
+WiFi with menu options `1` (SSID) and `2` (password), then press **S** to start —
+the settings are saved to the ESP32's NVS, so later boots skip straight through.
+Note the **IP address** printed after WiFi connects.
 
 ## 4. Receive the dump on your PC
 
-Edit `dump.py`, set `ESP32_IP` to the IP from step 3:
-
-```python
-ESP32_IP = '192.168.1.42'   # <-- from the serial monitor
-```
-
-Then, from a second terminal:
+Point the receiver at the IP from step 3 (remembered in a local
+`dump.config.json` afterwards, so you only pass it once):
 
 ```bash
+python3 dump.py --ip 192.168.1.42
+# subsequent runs need no flag:
 python3 dump.py
 ```
 

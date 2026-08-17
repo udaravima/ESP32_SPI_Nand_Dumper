@@ -14,8 +14,19 @@ Post-3.0 work, verified on real MT29F2G01 silicon plus the automated suites.
   `<dump>.badpages.json` sidecar (data still written, so majority vote keeps every
   byte). Turns a silently-corrupt dump — the `dump2` failure mode — into a loud,
   localized one. `dump.py` still accepts v1 dumps.
+- **Persistent settings.** The ESP32 saves its config (WiFi creds, port, SPI
+  clock, read mode, verify, ECC, retries) to NVS on every menu exit and reloads it
+  on boot — geometry stays auto-detected. `dump.py` gains `--ip`/`--port`/
+  `--out-dir`, remembered in a local (gitignored) `dump.config.json` so flags are
+  needed only once. A `config_validate()` clamp guards against corrupt NVS records.
 - **Re-dumpable serve loop** — the dumper serves each new client without an ESP
   reset between dumps; `'M'` in the serial console re-opens the config menu live.
+
+### Security
+- **WiFi credentials no longer ship in source** — compiled defaults are empty;
+  creds are entered once via the serial menu and persisted to NVS. (Prior
+  hardcoded credentials remain in git history; rotate that WiFi password to fully
+  retire them.)
 
 ### Changed
 - Wire protocol version bumped `1` → `2`; header flag bit3 signals per-page CRC.
