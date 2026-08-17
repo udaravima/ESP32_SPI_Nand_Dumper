@@ -13,6 +13,7 @@ void config_defaults(nand_app_config_t *c) {
   c->verify        = true;
   c->ecc_on        = false;    // raw by default
   c->max_retries   = 5;
+  c->batch_pages   = 1;        // per-page write; raise to coalesce for throughput
 }
 
 void config_validate(nand_app_config_t *c) {
@@ -22,6 +23,8 @@ void config_validate(nand_app_config_t *c) {
   if (c->read_mode > 1) c->read_mode = 0;
   if (c->max_retries < 0) c->max_retries = 0;
   if (c->max_retries > CONFIG_RETRIES_MAX) c->max_retries = CONFIG_RETRIES_MAX;
+  if (c->batch_pages < 1) c->batch_pages = 1;
+  if (c->batch_pages > CONFIG_BATCH_MAX) c->batch_pages = CONFIG_BATCH_MAX;
   // Guarantee NUL-termination for strings pulled out of NVS.
   c->ssid[sizeof(c->ssid) - 1] = '\0';
   c->pass[sizeof(c->pass) - 1] = '\0';

@@ -4,6 +4,7 @@
 #include "nand_addr.h"
 #include "dump_header.h"
 #include "config_store.h"
+#include "sys_info.h"
 
 void test_lookup_finds_micron(void) {
   const nand_chip_t *c = nand_chip_lookup(0x2C, 0x24);
@@ -68,17 +69,20 @@ void test_config_defaults_have_empty_wifi(void) {
   TEST_ASSERT_EQUAL_INT32(1000000, c.spi_clock_hz);
   TEST_ASSERT_TRUE(c.verify);
   TEST_ASSERT_FALSE(c.ecc_on);
+  TEST_ASSERT_EQUAL_INT32(1, c.batch_pages);
 }
 
 void test_config_validate_clamps_garbage(void) {
   nand_app_config_t c;
   config_defaults(&c);
   c.tcp_port = 0; c.spi_clock_hz = 999999999; c.read_mode = 200; c.max_retries = 5000;
+  c.batch_pages = 9999;
   config_validate(&c);
   TEST_ASSERT_EQUAL_UINT16(3333, c.tcp_port);
   TEST_ASSERT_EQUAL_INT32(CONFIG_CLOCK_MAX_HZ, c.spi_clock_hz);
   TEST_ASSERT_EQUAL_UINT8(0, c.read_mode);
   TEST_ASSERT_EQUAL_INT32(CONFIG_RETRIES_MAX, c.max_retries);
+  TEST_ASSERT_EQUAL_INT32(CONFIG_BATCH_MAX, c.batch_pages);
 }
 
 void test_config_validate_raises_too_low_clock(void) {
@@ -87,6 +91,18 @@ void test_config_validate_raises_too_low_clock(void) {
   c.spi_clock_hz = 50;   // below the floor
   config_validate(&c);
   TEST_ASSERT_EQUAL_INT32(CONFIG_CLOCK_MIN_HZ, c.spi_clock_hz);
+}
+
+void test_batch_pages_scales_with_memory(void) {
+  // Plenty of RAM -> hits the hard cap; tight RAM -> a handful; near-empty -> 1.
+  TEST_ASSERT_EQUAL_INT(64, sys_recommend_batch_pages(4 * 1024 * 1024, 2180, 64));
+  TEST_ASSERT_EQUAL_INT(3,  sys_recommend_batch_pages(40000, 2180, 64));
+  TEST_ASSERT_EQUAL_INT(1,  sys_recommend_batch_pages(1000, 2180, 64));
+  TEST_ASSERT_EQUAL_INT(1,  sys_recommend_batch_pages(SYS_DMA_HEADROOM, 2180, 64));
+}
+
+void test_batch_pages_respects_cap(void) {
+  TEST_ASSERT_EQUAL_INT(8, sys_recommend_batch_pages(4 * 1024 * 1024, 2180, 8));
 }
 
 int main(int, char **) {
@@ -101,5 +117,7 @@ int main(int, char **) {
   RUN_TEST(test_config_defaults_have_empty_wifi);
   RUN_TEST(test_config_validate_clamps_garbage);
   RUN_TEST(test_config_validate_raises_too_low_clock);
+  RUN_TEST(test_batch_pages_scales_with_memory);
+  RUN_TEST(test_batch_pages_respects_cap);
   return UNITY_END();
 }

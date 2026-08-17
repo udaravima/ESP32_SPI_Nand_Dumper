@@ -15,12 +15,14 @@ typedef struct {
   bool     verify;
   bool     ecc_on;
   int32_t  max_retries;
+  int32_t  batch_pages;  // pages coalesced per TCP write (throughput knob; 1 = per-page)
 } nand_app_config_t;
 
 // Safe bounds enforced by config_validate().
 #define CONFIG_CLOCK_MIN_HZ  100000      // 100 kHz
 #define CONFIG_CLOCK_MAX_HZ  80000000    // 80 MHz
 #define CONFIG_RETRIES_MAX   100
+#define CONFIG_BATCH_MAX     64
 
 // Fill with compiled defaults. WiFi credentials are intentionally EMPTY — they
 // are entered once via the serial menu, then persisted to NVS, so a plaintext

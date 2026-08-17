@@ -7,7 +7,7 @@
 static const char *CFG_NS   = "nandcfg";
 static const char *CFG_VER  = "ver";
 static const char *CFG_BLOB = "blob";
-static const uint8_t CFG_SCHEMA = 1;
+static const uint8_t CFG_SCHEMA = 2;   // bump when nand_app_config_t layout changes
 
 bool config_load(nand_app_config_t *c) {
   Preferences p;

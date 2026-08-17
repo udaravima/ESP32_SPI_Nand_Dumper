@@ -5,6 +5,7 @@
 #include "dump_header.h"
 #include "wifi_transport.h"
 #include "config_store.h"
+#include "sys_info.h"
 
 #define MAX_PAGE_SIZE 8192  // upper bound for buffer/transfer sizing
 
@@ -18,6 +19,7 @@ static int      cfg_spi_clock_hz = 1000000;    // 1 MHz
 static nand_read_mode_t cfg_read_mode = NAND_READ_SINGLE;
 static bool     cfg_verify       = true;
 static int      cfg_max_retries  = 5;
+static int      cfg_batch_pages  = 1;          // pages coalesced per TCP write (throughput knob)
 // NAND geometry (filled from the detected chip; overridable in the menu)
 static int      cfg_page_size       = 2176;
 static int      cfg_spare_size       = 128;
@@ -105,6 +107,8 @@ void show_menu() {
                  cfg_read_mode == NAND_READ_QUAD ? "Quad x4" : "Single x1");
   Serial.printf( "  [6] Verify Reads:    %s\n", cfg_verify ? "ON" : "OFF");
   Serial.printf( "  [7] Max Retries:     %d\n", cfg_max_retries);
+  Serial.printf( "  [B] Batch pages/write: %d %s\n", cfg_batch_pages,
+                 cfg_batch_pages == 1 ? "(per-page)" : "(coalesced)");
   Serial.printf( "  [E] ECC on read:     %s\n", cfg_ecc_on ? "ON (corrected)" : "OFF (raw)");
   Serial.println("  -- NAND Geometry --");
   Serial.printf( "  [8] Page Size:       %d bytes (spare %d)\n", cfg_page_size, cfg_spare_size);
@@ -176,6 +180,12 @@ void config_menu() {
         Serial.print("  Enter max retries: ");
         { String v = read_serial_line(); int q = v.toInt();
           if (q >= 0 && q <= 100) cfg_max_retries = q; else Serial.println("  [!] Invalid (0-100)"); }
+        break;
+      case 'B':
+        Serial.printf("  Enter pages per TCP write (1-%d; 1=per-page): ", CONFIG_BATCH_MAX);
+        { String v = read_serial_line(); int q = v.toInt();
+          if (q >= 1 && q <= CONFIG_BATCH_MAX) cfg_batch_pages = q;
+          else Serial.printf("  [!] Invalid (1-%d)\n", CONFIG_BATCH_MAX); }
         break;
       case 'E':
         cfg_ecc_on = !cfg_ecc_on;
@@ -279,6 +289,7 @@ void load_persisted_config() {
     cfg_verify       = c.verify;
     cfg_ecc_on       = c.ecc_on;
     cfg_max_retries  = c.max_retries;
+    cfg_batch_pages  = c.batch_pages;
     Serial.println("[*] Loaded saved settings from NVS.");
   } else {
     Serial.println("[*] No saved settings yet — enter WiFi in the menu; it is saved on 'S'.");
@@ -297,6 +308,7 @@ void persist_config() {
   c.verify       = cfg_verify;
   c.ecc_on       = cfg_ecc_on;
   c.max_retries  = cfg_max_retries;
+  c.batch_pages  = cfg_batch_pages;
   config_validate(&c);
   config_save(&c);
   Serial.println("[*] Settings saved to NVS.");
@@ -312,6 +324,8 @@ void setup() {
   Serial.println("  ESP32 SPI NAND Dumper v3.0");
   Serial.println("  Auto-detect + WiFi TCP");
   Serial.println("========================================");
+
+  sys_info_report();   // runtime board capabilities (portable across ESP32 variants)
 
   // ---- Bring SPI up slow, detect the chip ----
   nand_config_t nand_cfg = NAND_DEFAULT_CONFIG();
@@ -392,9 +406,31 @@ void cmd_dump(bool verify) {
   uint32_t total_pages = (uint32_t)cfg_total_blocks * cfg_pages_per_block;
   uint32_t total_bytes = total_pages * (uint32_t)cfg_page_size;
 
-  // +4 bytes hold the per-page CRC32 seal appended after the page data.
-  uint8_t *page_buf = (uint8_t *)heap_caps_malloc(cfg_page_size + 4, MALLOC_CAP_DMA);
-  if (!page_buf) { Serial.println("[!] Buffer alloc failed!"); return; }
+  // Each SPI DMA read lands in a page-sized DMA-capable scratch buffer; completed
+  // page-frames (data + 4-byte CRC seal) are copied into a larger batch buffer and
+  // flushed to TCP in ONE write every `batch` pages. Batching cuts per-write
+  // overhead; the batch size is the menu knob, clamped to what this board's free
+  // heap can hold — computed at runtime, so the same binary self-sizes on any
+  // ESP32 variant.
+  size_t frame_size = (size_t)cfg_page_size + 4;
+  int batch = sys_recommend_batch_pages(ESP.getFreeHeap(), frame_size, CONFIG_BATCH_MAX);
+  if (cfg_batch_pages < batch) batch = cfg_batch_pages;
+  if (batch < 1) batch = 1;
+
+  uint8_t *scratch   = (uint8_t *)heap_caps_malloc(frame_size, MALLOC_CAP_DMA);
+  uint8_t *batch_buf = (uint8_t *)malloc((size_t)batch * frame_size);
+  while (!batch_buf && batch > 1) {           // back off if the heap can't hold it
+    batch /= 2;
+    batch_buf = (uint8_t *)malloc((size_t)batch * frame_size);
+  }
+  if (!scratch || !batch_buf) {
+    Serial.println("[!] Buffer alloc failed!");
+    free(scratch); free(batch_buf);
+    return;
+  }
+  if (batch != cfg_batch_pages)
+    Serial.printf("[*] Batch clamped to %d pages/write (memory).\n", batch);
+  Serial.printf("[*] Streaming %d page(s)/write, frame %u B.\n", batch, (unsigned)frame_size);
 
   // ---- Send the 32-byte geometry header so the PC self-configures ----
   dump_geometry_t geo = {0};
@@ -416,12 +452,13 @@ void cmd_dump(bool verify) {
   if (wifi_transport_send(hdr, sizeof(hdr)) != sizeof(hdr)) {
     Serial.println("[!] Client dropped during header; aborting dump.");
     wifi_transport_close();
-    free(page_buf);
+    free(scratch); free(batch_buf);
     return;
   }
 
   unsigned long startTime = millis();
   uint32_t pagesDone = 0, retryCount = 0, failedPages = 0;
+  int fill = 0;   // page-frames currently held in batch_buf
 
   bool aborted = false;
   for (int block = 0; block < cfg_total_blocks && !aborted; block++) {
@@ -429,30 +466,36 @@ void cmd_dump(bool verify) {
       uint32_t row = nand_row_addr(block, page, cfg_page_addr_bits);
 
       if (verify) {
-        if (!nand_read_page_verified(row, page_buf, cfg_page_size, cfg_max_retries, &retryCount))
+        if (!nand_read_page_verified(row, scratch, cfg_page_size, cfg_max_retries, &retryCount))
           failedPages++;
       } else {
         nand_page_read_to_cache(row);
         nand_wait_ready();
-        nand_read_cache(page_buf, cfg_page_size);
+        nand_read_cache(scratch, cfg_page_size);
       }
 
-      // Seal the page: CRC32 over the data, appended little-endian, sent in one
-      // write. The PC re-checks it, so any ESP->PC wire corruption or truncation
-      // is caught and pinned to this page instead of passing silently.
-      uint32_t crc = dump_crc32(page_buf, cfg_page_size);
-      page_buf[cfg_page_size + 0] = (uint8_t)crc;
-      page_buf[cfg_page_size + 1] = (uint8_t)(crc >> 8);
-      page_buf[cfg_page_size + 2] = (uint8_t)(crc >> 16);
-      page_buf[cfg_page_size + 3] = (uint8_t)(crc >> 24);
+      // Seal the page: CRC32 over the data, appended little-endian. The PC
+      // re-checks it, so ESP->PC corruption or truncation is caught and pinned
+      // to this page instead of passing silently.
+      uint32_t crc = dump_crc32(scratch, cfg_page_size);
+      scratch[cfg_page_size + 0] = (uint8_t)crc;
+      scratch[cfg_page_size + 1] = (uint8_t)(crc >> 8);
+      scratch[cfg_page_size + 2] = (uint8_t)(crc >> 16);
+      scratch[cfg_page_size + 3] = (uint8_t)(crc >> 24);
 
-      size_t frame_len = (size_t)cfg_page_size + 4;
-      if (wifi_transport_send(page_buf, frame_len) != frame_len) {
-        Serial.printf("[!] Send failed at page %u (client gone?); aborting dump.\n", pagesDone);
-        aborted = true;
-        break;
-      }
+      memcpy(batch_buf + (size_t)fill * frame_size, scratch, frame_size);
+      fill++;
       pagesDone++;
+
+      if (fill == batch) {
+        size_t n = (size_t)fill * frame_size;
+        if (wifi_transport_send(batch_buf, n) != n) {
+          Serial.printf("[!] Send failed near page %u (client gone?); aborting.\n", pagesDone);
+          aborted = true;
+          break;
+        }
+        fill = 0;
+      }
 
       if (pagesDone % 1024 == 0) {
         float mb = (float)pagesDone * cfg_page_size / (1024.0 * 1024.0);
@@ -465,8 +508,18 @@ void cmd_dump(bool verify) {
     }
   }
 
+  // Flush the final partial batch.
+  if (!aborted && fill > 0) {
+    size_t n = (size_t)fill * frame_size;
+    if (wifi_transport_send(batch_buf, n) != n) {
+      Serial.println("[!] Send failed on final flush; aborting.");
+      aborted = true;
+    }
+  }
+
   wifi_transport_close();
-  free(page_buf);
+  free(scratch);
+  free(batch_buf);
 
   if (aborted) {
     Serial.printf("[!] Dump aborted after %u/%u pages (client disconnected).\n",
