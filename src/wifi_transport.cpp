@@ -42,7 +42,12 @@ bool wifi_transport_wait_client() {
   return true;
 }
 
+bool wifi_transport_ready() {
+  return s_server != NULL;
+}
+
 bool wifi_transport_client_available() {
+  if (!s_server) return false;   // WiFi never came up — don't deref a null server
   s_client = s_server->available();
   if (s_client) {
     s_client.setNoDelay(true);

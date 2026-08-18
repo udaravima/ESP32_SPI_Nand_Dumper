@@ -5,6 +5,7 @@
 #include "dump_header.h"
 #include "config_store.h"
 #include "sys_info.h"
+#include "nand_ecc.h"
 
 void test_lookup_finds_micron(void) {
   const nand_chip_t *c = nand_chip_lookup(0x2C, 0x24);
@@ -105,6 +106,23 @@ void test_batch_pages_respects_cap(void) {
   TEST_ASSERT_EQUAL_INT(8, sys_recommend_batch_pages(4 * 1024 * 1024, 2180, 8));
 }
 
+void test_ecc_uncorrectable_only_for_010(void) {
+  TEST_ASSERT_TRUE(nand_ecc_uncorrectable(0x02));   // the only uncorrectable code
+  TEST_ASSERT_FALSE(nand_ecc_uncorrectable(0x00));
+  TEST_ASSERT_FALSE(nand_ecc_uncorrectable(0x01));
+  TEST_ASSERT_FALSE(nand_ecc_uncorrectable(0x03));
+  TEST_ASSERT_FALSE(nand_ecc_uncorrectable(0x05));
+  TEST_ASSERT_TRUE(nand_ecc_uncorrectable(0xF2));   // upper (CRBSY etc.) bits masked
+}
+
+void test_ecc_refresh_recommended(void) {
+  TEST_ASSERT_TRUE(nand_ecc_refresh_recommended(0x03));
+  TEST_ASSERT_TRUE(nand_ecc_refresh_recommended(0x05));
+  TEST_ASSERT_FALSE(nand_ecc_refresh_recommended(0x00));
+  TEST_ASSERT_FALSE(nand_ecc_refresh_recommended(0x01));
+  TEST_ASSERT_FALSE(nand_ecc_refresh_recommended(0x02));   // uncorrectable is not "refresh"
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_lookup_finds_micron);
@@ -119,5 +137,7 @@ int main(int, char **) {
   RUN_TEST(test_config_validate_raises_too_low_clock);
   RUN_TEST(test_batch_pages_scales_with_memory);
   RUN_TEST(test_batch_pages_respects_cap);
+  RUN_TEST(test_ecc_uncorrectable_only_for_010);
+  RUN_TEST(test_ecc_refresh_recommended);
   return UNITY_END();
 }

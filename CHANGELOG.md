@@ -6,6 +6,17 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Boot-loop crash when WiFi fails to connect.** `loop()` dereferenced a null TCP
+  server after a failed `wifi_transport_init` (much more reachable since v3.1.0
+  made WiFi credentials empty by default). Guarded the null server, and `setup()`
+  no longer dead-ends: press `'M'` to enter credentials and it retries live.
+- **ECC-on dumps now flag uncorrectable pages.** The firmware reads the on-die ECC
+  status (ECCS) after each page when ECC is enabled and reports uncorrectable /
+  refresh-recommended counts (and the first 20 uncorrectable page indices). A CRC
+  over corrected-or-not data cannot reveal an uncorrectable page, so without this a
+  damaged page passed silently. Decoding is per datasheet Table 9.
+
 ## [3.1.0] - 2026-08-17
 
 Integrity, persistence, and portability. Verified on real MT29F2G01 silicon plus

@@ -144,18 +144,22 @@ powers up **enabled**, but this tool defaults it **OFF** for dumping. The choice
 matters:
 
 - **OFF (raw)** — the array is read with no correction; you capture the literal
-  stored bits, including the ECC parity bytes in the spare area. This is
-  **lossless and reversible**: you can run ECC correction offline afterward, or
-  majority-vote across several dumps to repair transmission errors. Choose this
-  for forensics, wear analysis, or when you don't trust the controller.
-- **ON (corrected)** — the engine corrects bit errors and reports status; the
-  data is cleaner and immediately mountable after stripping. But the raw parity
-  is gone, and a page with *uncorrectable* errors is silently mis-corrected.
-  Choose this when you just want the working filesystem.
+  stored bits, including the ECC parity bytes in the spare. This is **lossless**:
+  keep it as the archival original, and majority-vote across several dumps
+  (`verify_dump.py`) to repair random flips. *Caveat:* Micron does not publish the
+  on-die ECC algorithm or parity layout, so you cannot practically re-derive its
+  correction offline from the parity — for a corrected image, re-read with ECC ON.
+  Choose OFF for forensics, wear analysis, or when you don't trust the controller.
+- **ON (corrected)** — the engine corrects up to 8 bits/sector and, as of the
+  latest firmware, **reports uncorrectable pages** on the serial console (a count
+  plus the first 20 page indices). The data is cleaner and immediately mountable
+  after stripping, but the raw parity is gone. Choose this when you want the
+  working filesystem — and watch the ECC summary for uncorrectable pages.
 
-The asymmetry is the reason for the OFF default: from a raw dump you can always
-compute the corrected image, but from a corrected dump you can never recover the
-raw parity. The mode you used is recorded in the metadata sidecar.
+The asymmetry is the reason for the OFF default: a raw dump keeps everything
+(parity included), while a corrected dump discards the parity for good. If you
+later want correction, re-read with ECC ON — the chip applies its own algorithm.
+The mode you used is recorded in the metadata sidecar.
 
 ## Read modes: single and quad
 

@@ -32,6 +32,7 @@ be verified on real silicon.
 | [`dump_header.h`](../src/dump_header.h) / [`.cpp`](../src/dump_header.cpp) | 32-byte geometry header pack + CRC32 | ✅ host-testable |
 | [`config_store.h`](../src/config_store.h) / [`.cpp`](../src/config_store.cpp) | `nand_app_config_t`; `config_defaults()` / `config_validate()` clamp | ✅ host-testable |
 | [`config_nvs.cpp`](../src/config_nvs.cpp) | `config_load()` / `config_save()` — NVS blob via `Preferences` | ❌ hardware |
+| [`nand_ecc.h`](../src/nand_ecc.h) | `nand_ecc_uncorrectable()` / `nand_ecc_refresh_recommended()` — ECCS decode (datasheet Table 9) | ✅ host-testable |
 | [`sys_info.h`](../src/sys_info.h) / [`.cpp`](../src/sys_info.cpp) | `sys_recommend_batch_pages()` — memory-aware batch sizing | ✅ host-testable |
 | [`sys_info_esp.cpp`](../src/sys_info_esp.cpp) | `sys_info_report()` / `sys_free_dma_bytes()` — runtime chip/heap query | ❌ hardware |
 | [`board_pins.h`](../src/board_pins.h) | Per-target pins + `NAND_SPI_HOST` | — macros |

@@ -6,6 +6,7 @@
 #include "wifi_transport.h"
 #include "config_store.h"
 #include "sys_info.h"
+#include "nand_ecc.h"
 
 #define MAX_PAGE_SIZE 8192  // upper bound for buffer/transfer sizing
 
@@ -314,6 +315,14 @@ void persist_config() {
   Serial.println("[*] Settings saved to NVS.");
 }
 
+// Attempt to bring WiFi + the TCP server up from the current credentials.
+// Safe to call again after a failure (only re-inits while not already ready).
+bool bring_up_wifi() {
+  if (wifi_transport_ready()) return true;
+  wifi_transport_config_t wifi_cfg = { .ssid = cfg_ssid, .password = cfg_pass, .port = cfg_tcp_port };
+  return wifi_transport_init(&wifi_cfg);
+}
+
 // ============ SETUP ============
 
 void setup() {
@@ -359,10 +368,13 @@ void setup() {
   apply_runtime_settings();
 
   // ---- WiFi transport (brought up once; stays up across dumps) ----
-  wifi_transport_config_t wifi_cfg = { .ssid = cfg_ssid, .password = cfg_pass, .port = cfg_tcp_port };
-  if (!wifi_transport_init(&wifi_cfg)) { Serial.println("[!] WiFi init failed!"); return; }
-
-  Serial.println("[+] Ready. Run dump.py to start a dump.");
+  if (bring_up_wifi()) {
+    Serial.println("[+] Ready. Run dump.py to start a dump.");
+  } else {
+    // Do NOT dead-end: loop() stays alive (client calls are inert until ready),
+    // so the user can set credentials with 'M' and it retries — no reset needed.
+    Serial.println("[!] WiFi not connected. Press 'M' to set SSID/password; it will retry.");
+  }
   Serial.println("    Between dumps: press 'M' then Enter here to reconfigure (no reset needed).");
 }
 
@@ -382,7 +394,13 @@ void loop() {
       config_menu();
       persist_config();
       apply_runtime_settings();
-      Serial.println("    (SPI/geometry/ECC applied now; WiFi SSID/port changes still need a reset.)");
+      if (!wifi_transport_ready()) {
+        // WiFi never came up (e.g. blank creds on a fresh board) — retry now.
+        if (bring_up_wifi()) Serial.println("[+] WiFi connected. Run dump.py to start a dump.");
+        else Serial.println("[!] Still not connected — check credentials and press 'M' again.");
+      } else {
+        Serial.println("    (SPI/geometry/ECC applied now; WiFi SSID/port changes still need a reset.)");
+      }
       announced = false;
     }
   }
@@ -458,6 +476,7 @@ void cmd_dump(bool verify) {
 
   unsigned long startTime = millis();
   uint32_t pagesDone = 0, retryCount = 0, failedPages = 0;
+  uint32_t eccUncorrectable = 0, eccRefresh = 0;   // meaningful only when ECC is on
   int fill = 0;   // page-frames currently held in batch_buf
 
   bool aborted = false;
@@ -472,6 +491,22 @@ void cmd_dump(bool verify) {
         nand_page_read_to_cache(row);
         nand_wait_ready();
         nand_read_cache(scratch, cfg_page_size);
+      }
+
+      // With ECC on, the chip corrects up to 8 bits/sector and reports the
+      // outcome in ECCS. A CRC over corrected-or-not data can't reveal an
+      // uncorrectable page, so surface it here — otherwise a damaged page passes
+      // silently. (ECCS is only valid when ECC is enabled.)
+      if (cfg_ecc_on) {
+        uint8_t eccs = nand_get_ecc_status();
+        if (nand_ecc_uncorrectable(eccs)) {
+          eccUncorrectable++;
+          if (eccUncorrectable <= 20)
+            Serial.printf("[ECC] UNCORRECTABLE page %u (block %d, page %d)\n",
+                          pagesDone, block, page);
+        } else if (nand_ecc_refresh_recommended(eccs)) {
+          eccRefresh++;
+        }
       }
 
       // Seal the page: CRC32 over the data, appended little-endian. The PC
@@ -533,4 +568,10 @@ void cmd_dump(bool verify) {
   Serial.printf("[+] %.1f MB in %lu sec (%.2f MB/s)\n",
                 totalMB, elapsed, elapsed > 0 ? totalMB / elapsed : 0);
   Serial.printf("[+] Retries: %u | Failed pages: %u\n", retryCount, failedPages);
+  if (cfg_ecc_on) {
+    Serial.printf("[+] ECC: %u uncorrectable, %u refresh-recommended pages\n",
+                  eccUncorrectable, eccRefresh);
+    if (eccUncorrectable > 20)
+      Serial.printf("    (only the first 20 uncorrectable pages were listed above)\n");
+  }
 }
