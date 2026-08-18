@@ -6,6 +6,8 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [3.1.1] - 2026-08-17
+
 ### Fixed
 - **Boot-loop crash when WiFi fails to connect.** `loop()` dereferenced a null TCP
   server after a failed `wifi_transport_init` (much more reachable since v3.1.0
