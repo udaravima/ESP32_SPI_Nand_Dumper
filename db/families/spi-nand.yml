@@ -1,0 +1,18 @@
+name: spi-nand
+opcodes:
+  reset: 0xFF
+  read_id: 0x9F
+  get_feature: 0x0F
+  set_feature: 0x1F
+  page_read: 0x13
+  read_cache: {x1: 0x0B, x2: 0x3B, x4: 0x6B}
+  program_load: {x1: 0x02, x4: 0x32}
+  program_exec: 0x10
+  block_erase: 0xD8
+  write_enable: 0x06
+  write_disable: 0x04
+feature_addrs: {block_lock: 0xA0, config: 0xB0, status: 0xC0}
+status_bits: {oip: 0, wel: 1, erase_fail: 2, prog_fail: 3}
+config_ecc_en_bit: 4
+address_model: {row_bits: 24, read_dummy_bytes: 1, col_bits: 12}
+read_id_default: {method: dummy, id_bytes: 2}

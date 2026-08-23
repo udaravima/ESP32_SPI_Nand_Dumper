@@ -1,0 +1,13 @@
+name: dosilicon
+datasheet: "DS35x1GAxxx (Dosilicon); matches mainline Linux spinand dosilicon driver"
+ecc: {scheme: generic2, strength: 4, status2_reg: null}
+qe: {has: true, feature_addr: 0xB0, bit: 0x01}
+oob_layout:
+  # Region byte-offsets are consumed only in Stage 2 (stripper/BBT). Leaving them
+  # EMPTY here keeps the golden blob a correct regression target and avoids baking
+  # in unverified offsets. The real per-vendor layout (Dosilicon is 6-free/8-ECC,
+  # stride 14) is authored + checked against mainline dosilicon.c in Stage 2.
+  free_regions: []
+  ecc_regions:  []
+  bbm: {off: 0, len: 2, good: 0xFF, pages: [first]}
+config_ecc_en_bit: null

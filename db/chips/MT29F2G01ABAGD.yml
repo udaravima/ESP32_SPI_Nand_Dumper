@@ -1,0 +1,11 @@
+name: MT29F2G01ABAGD
+id: {mfr: 0x2C, dev: 0x24, dev2: null, onfi: null}
+family: spi-nand
+profile: micron
+geometry: {page_size: 2176, spare_size: 128, pages_per_block: 64, total_blocks: 2048, planes: 2}
+read_mode: single
+vcc_mv: 3300
+datasheet: "MT29F2G01ABAGD datasheet (untracked, local)"
+notes: "2Gb SLC, 8-bit/512 on-die ECC, 2 planes x 1024 blocks"
+resident: true
+overrides: {}
