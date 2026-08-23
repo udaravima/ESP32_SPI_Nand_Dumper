@@ -16,3 +16,50 @@ def test_dangling_profile_ref_raises(tmp_path):
         "name: X\nfamily: spi-nand\nprofile: nope\nid: {mfr: 1, dev: 2}\n")
     with pytest.raises(chipdb.RefError):
         chipdb.resolve_refs(chipdb.load(root=str(tmp_path)))
+
+def test_scheme_expands_to_16_entries_uncor_default():
+    shift, mask, m = chipdb.expand_scheme("generic2")
+    assert (shift, mask) == (4, 0x3)
+    assert len(m) == 16
+    assert m[2] == chipdb.UNCOR          # field 2 = uncorrectable
+    assert all(v == chipdb.UNCOR for v in m[4:])  # unnamed => UNCOR
+
+def test_validate_accepts_both_shipped_chips():
+    db = chipdb.load()
+    for name in db.chips:
+        chipdb.validate(chipdb.get(db, name))  # must not raise
+
+def test_validate_rejects_spare_ge_page():
+    db = chipdb.load()
+    c = chipdb.get(db, "DS35Q1GA")
+    c["geometry"]["spare_size"] = c["geometry"]["page_size"]
+    with pytest.raises(chipdb.ValidationError):
+        chipdb.validate(c)
+
+def test_validate_rejects_non_power_of_two_ppb():
+    db = chipdb.load()
+    c = chipdb.get(db, "DS35Q1GA")
+    c["geometry"]["pages_per_block"] = 63
+    with pytest.raises(chipdb.ValidationError):
+        chipdb.validate(c)
+
+def test_validate_rejects_capacity_out_of_window():
+    db = chipdb.load()
+    c = chipdb.get(db, "DS35Q1GA")
+    c["geometry"]["total_blocks"] = 1        # ~2 Mb, below 512 Mb floor
+    with pytest.raises(chipdb.ValidationError):
+        chipdb.validate(c)
+
+def test_validate_rejects_overlong_name():
+    db = chipdb.load()
+    c = chipdb.get(db, "DS35Q1GA")
+    c["name"] = "X" * 24                      # 24 chars, no room for NUL in name[24]
+    with pytest.raises(chipdb.ValidationError):
+        chipdb.validate(c)
+
+def test_validate_rejects_too_many_oob_regions():
+    db = chipdb.load()
+    c = chipdb.get(db, "DS35Q1GA")
+    c["profile"]["oob_layout"]["free_regions"] = [[0, 1]] * 5   # > 4 would truncate
+    with pytest.raises(chipdb.ValidationError):
+        chipdb.validate(c)
