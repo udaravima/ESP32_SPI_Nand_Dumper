@@ -63,3 +63,24 @@ def test_validate_rejects_too_many_oob_regions():
     c["profile"]["oob_layout"]["free_regions"] = [[0, 1]] * 5   # > 4 would truncate
     with pytest.raises(chipdb.ValidationError):
         chipdb.validate(c)
+
+def test_validate_rejects_zero_total_blocks():
+    db = chipdb.load()
+    c = chipdb.get(db, "DS35Q1GA")
+    c["geometry"]["total_blocks"] = 0
+    with pytest.raises(chipdb.ValidationError):
+        chipdb.validate(c)
+
+def test_validate_rejects_bbm_beyond_spare():
+    db = chipdb.load()
+    c = chipdb.get(db, "DS35Q1GA")
+    c["profile"]["oob_layout"]["bbm"]["offset"] = c["geometry"]["spare_size"]
+    with pytest.raises(chipdb.ValidationError):
+        chipdb.validate(c)
+
+def test_validate_rejects_too_many_ecc_regions():
+    db = chipdb.load()
+    c = chipdb.get(db, "DS35Q1GA")
+    c["profile"]["oob_layout"]["ecc_regions"] = [[0, 1]] * 5
+    with pytest.raises(chipdb.ValidationError):
+        chipdb.validate(c)

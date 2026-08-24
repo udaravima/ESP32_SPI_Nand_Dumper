@@ -9,5 +9,5 @@ oob_layout:
   # stride 14) is authored + checked against mainline dosilicon.c in Stage 2.
   free_regions: []
   ecc_regions:  []
-  bbm: {off: 0, len: 2, good: 0xFF, pages: [first]}
+  bbm: {offset: 0, len: 2, good: 0xFF, pages: [first]}
 config_ecc_en_bit: null

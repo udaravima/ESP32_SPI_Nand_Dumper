@@ -104,16 +104,18 @@ def validate(chip):
         raise ValidationError(f"{name}: total_blocks must be > 0")
     main = g["page_size"] - g["spare_size"]
     total_main = main * ppb * g["total_blocks"]
+    # DEFENSIVE: overflow check subsumed by capacity-window check below; unreachable with valid data
     if total_main > 0xFFFFFFFF:
         raise ValidationError(f"{name}: capacity overflows uint32")
     if not (_CAP_MIN <= total_main <= _CAP_MAX):
         raise ValidationError(f"{name}: main capacity {total_main} outside 512 Mb..8 Gb window")
     shift, mask, _m = expand_scheme(chip["profile"]["ecc"]["scheme"])
+    # DEFENSIVE: expand_scheme raises ValidationError first on unknown scheme; shift/mask check unreachable with valid data
     if shift > 7 or mask not in (0x1, 0x3, 0x7, 0xF):
         raise ValidationError(f"{name}: bad ecc shift/mask {shift}/{mask}")
     oob = chip["profile"]["oob_layout"]
     bbm = oob["bbm"]
-    if bbm[False] + bbm["len"] > g["spare_size"]:
+    if bbm["offset"] + bbm["len"] > g["spare_size"]:
         raise ValidationError(f"{name}: bbm exceeds spare_size")
     # The flat struct caps OOB at 4 regions each (8 uint16 = 4 pairs); reject
     # rather than let _regions_to_pairs silently truncate a longer list.

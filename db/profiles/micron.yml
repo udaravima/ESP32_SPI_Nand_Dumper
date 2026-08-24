@@ -5,5 +5,5 @@ qe: {has: false}
 oob_layout:
   free_regions: []          # see dosilicon.yml note — real MT29F layout lands in Stage 2
   ecc_regions:  []
-  bbm: {off: 0, len: 1, good: 0xFF, pages: [first]}
+  bbm: {offset: 0, len: 1, good: 0xFF, pages: [first]}
 config_ecc_en_bit: null
