@@ -1,5 +1,8 @@
 #include <unity.h>
+#include <string.h>
 #include "nand_profile.h"
+#include "golden_ds35.h"
+#include "nand_profiles_generated.h"
 
 void test_active_profile_is_110_bytes(void) {
   // The wire contract: host packs 110 bytes, device reads 110 bytes.
@@ -48,6 +51,31 @@ void test_decode_xtx_g0xa(void) {
   TEST_ASSERT_EQUAL_INT(NAND_SEV_CORRECTED_REFRESH, nand_profile_severity(&p, 12u<<2)); // field 12
 }
 
+void test_golden_blob_unpacks_to_ds35(void) {
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)sizeof(active_profile_t), GOLDEN_DS35Q1GA_LEN);
+  active_profile_t p;
+  memcpy(&p, GOLDEN_DS35Q1GA_BLOB, sizeof(p));
+  TEST_ASSERT_EQUAL_STRING("DS35Q1GA", p.name);
+  TEST_ASSERT_EQUAL_UINT32(2112u, p.page_size);
+  TEST_ASSERT_EQUAL_UINT32(64u, p.spare_size);
+  TEST_ASSERT_EQUAL_UINT32(64u, p.pages_per_block);
+  TEST_ASSERT_EQUAL_UINT32(1024u, p.total_blocks);
+  TEST_ASSERT_EQUAL_UINT8(4, p.ecc_shift);
+  TEST_ASSERT_EQUAL_UINT8(0x3, p.ecc_mask);
+  TEST_ASSERT_EQUAL_INT(NAND_SEV_UNCORRECTABLE, p.ecc_map[2]);
+  TEST_ASSERT_EQUAL_UINT8(0xB0, p.qe_addr);
+  TEST_ASSERT_EQUAL_UINT8(0x01, p.qe_bit);
+  TEST_ASSERT_EQUAL_UINT8(0x00, p.bbm_off);
+  TEST_ASSERT_EQUAL_UINT8(0xFF, p.bbm_good);
+  TEST_ASSERT_EQUAL_UINT16(3300u, p.vcc_mv);
+  // decoder runs against the unpacked profile
+  TEST_ASSERT_EQUAL_INT(NAND_SEV_UNCORRECTABLE, nand_profile_severity(&p, 0x20));
+}
+
+void test_resident_array_has_two_chips(void) {
+  TEST_ASSERT_EQUAL_UINT32(2u, PROFILES_COUNT);
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -58,5 +86,7 @@ int main(int, char **) {
   RUN_TEST(test_decode_micron3);
   RUN_TEST(test_decode_xtx4_reaches_index_15);
   RUN_TEST(test_decode_xtx_g0xa);
+  RUN_TEST(test_golden_blob_unpacks_to_ds35);
+  RUN_TEST(test_resident_array_has_two_chips);
   return UNITY_END();
 }
