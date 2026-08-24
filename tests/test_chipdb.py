@@ -1,6 +1,24 @@
 import pytest
 import chipdb
 import struct
+from pathlib import Path
+
+# Resolve the real db/ relative to this test file, not the CWD pytest ran from.
+DB_DIR = Path(__file__).resolve().parent.parent / "db"
+
+def _twin_db(tmp_path):
+    for d in ("families", "profiles", "chips"):
+        (tmp_path / d).mkdir()
+    (tmp_path / "families" / "spi-nand.yml").write_text(
+        (DB_DIR / "families" / "spi-nand.yml").read_text())
+    (tmp_path / "profiles" / "dosilicon.yml").write_text(
+        (DB_DIR / "profiles" / "dosilicon.yml").read_text())
+    base = (DB_DIR / "chips" / "DS35Q1GA.yml").read_text()
+    (tmp_path / "chips" / "A.yml").write_text(
+        base.replace("name: DS35Q1GA", "name: TWIN_A").replace("dev2: null", "dev2: 0x01"))
+    (tmp_path / "chips" / "B.yml").write_text(
+        base.replace("name: DS35Q1GA", "name: TWIN_B").replace("dev2: null", "dev2: 0x02"))
+    return chipdb.load(root=str(tmp_path))
 
 def test_load_resolves_two_chips():
     db = chipdb.load()
@@ -109,3 +127,21 @@ def test_micron_has_no_qe():
     db = chipdb.load()
     flat = chipdb.flatten(chipdb.get(db, "MT29F2G01ABAGD"))
     assert flat["qe_addr"] == 0 and flat["qe_bit"] == 0
+
+def test_resolve_unique_id():
+    db = chipdb.load()
+    assert chipdb.resolve(db, 0xE5, 0x71)["name"] == "DS35Q1GA"
+
+def test_resolve_by_dev2(tmp_path):
+    db = _twin_db(tmp_path)
+    assert chipdb.resolve(db, 0xE5, 0x71, dev2=0x02)["name"] == "TWIN_B"
+
+def test_resolve_ambiguous_raises_with_candidates(tmp_path):
+    db = _twin_db(tmp_path)
+    with pytest.raises(chipdb.AmbiguousID) as e:
+        chipdb.resolve(db, 0xE5, 0x71)
+    assert {c["name"] for c in e.value.candidates} == {"TWIN_A", "TWIN_B"}
+
+def test_resolve_ambiguous_honors_cached_choice(tmp_path):
+    db = _twin_db(tmp_path)
+    assert chipdb.resolve(db, 0xE5, 0x71, cached_name="TWIN_A")["name"] == "TWIN_A"

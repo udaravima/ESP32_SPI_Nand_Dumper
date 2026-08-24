@@ -188,3 +188,28 @@ def pack(flat):
         flat["bbm_off"], flat["bbm_len"], flat["bbm_good"],
         flat["oob_free_n"], flat["oob_ecc_n"], *flat["oob_free"], *flat["oob_ecc"],
     )
+
+
+def candidates(db, mfr, dev):
+    return [c for c in db.chips.values()
+            if c["id"]["mfr"] == mfr and c["id"]["dev"] == dev]
+
+
+def resolve(db, mfr, dev, dev2=None, cached_name=None):
+    cands = candidates(db, mfr, dev)
+    if not cands:
+        raise RefError(f"no chip for id {mfr:#04x} {dev:#04x}")
+    if len(cands) == 1:
+        return cands[0]
+    if dev2 is not None:                       # rung 1: extra ID byte
+        narrowed = [c for c in cands if c["id"].get("dev2") == dev2]
+        if len(narrowed) == 1:
+            return narrowed[0]
+        if narrowed:
+            cands = narrowed
+    if cached_name is not None:                # rung 3: cached/user choice
+        for c in cands:
+            if c["name"] == cached_name:
+                return c
+    # rung 2 (ONFI) is a stub — fail closed with the candidate list
+    raise AmbiguousID(cands)
