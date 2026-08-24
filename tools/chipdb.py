@@ -1,6 +1,7 @@
 """Load / validate / flatten the three-layer NAND chip database (db/)."""
 import glob
 import os
+import struct
 import yaml
 
 DB_ROOT = os.path.join(os.path.dirname(__file__), "..", "db")
@@ -123,3 +124,67 @@ def validate(chip):
         raise ValidationError(f"{name}: oob free_regions exceeds 4")
     if len(oob["ecc_regions"]) > 4:
         raise ValidationError(f"{name}: oob ecc_regions exceeds 4")
+
+
+PROFILE_SIZE = 110
+# Matches active_profile_t (packed, little-endian). Field order is load-bearing.
+PACK_FORMAT = "<24s IIII BBBBBB B BB 16B B BB BB B H BBB BB 8H 8H"
+
+_READ_MODE = {"single": 0, "quad": 1}
+_ID_METHOD = {"addr": 0, "dummy": 1}
+
+
+def _regions_to_pairs(regions):
+    flat = []
+    for off, ln in regions:
+        flat += [off, ln]
+    flat += [0] * (8 - len(flat))   # pad to 4 (off,len) pairs
+    return flat[:8]
+
+
+def flatten(chip):
+    validate(chip)
+    g, fam, prof = chip["geometry"], chip["family"], chip["profile"]
+    shift, mask, emap = expand_scheme(prof["ecc"]["scheme"])
+    ecc_en_bit = prof.get("config_ecc_en_bit")
+    if ecc_en_bit is None:
+        ecc_en_bit = fam["config_ecc_en_bit"]
+    qe = prof.get("qe", {})
+    rid = chip.get("read_id") or fam["read_id_default"]
+    oob = prof["oob_layout"]
+    bbm = oob["bbm"]
+    s2 = prof["ecc"].get("status2_reg") or 0
+    ops = fam["opcodes"]
+    return {
+        "name": chip["name"],
+        "page_size": g["page_size"], "spare_size": g["spare_size"],
+        "pages_per_block": g["pages_per_block"], "total_blocks": g["total_blocks"],
+        "op_page_read": ops["page_read"], "op_read_cache": ops["read_cache"]["x1"],
+        "op_get_feat": ops["get_feature"], "op_set_feat": ops["set_feature"],
+        "op_status_addr": fam["feature_addrs"]["status"], "op_cfg_addr": fam["feature_addrs"]["config"],
+        "ecc_en_bit": ecc_en_bit, "ecc_shift": shift, "ecc_mask": mask, "ecc_map": list(emap),
+        "status2_reg": s2,
+        "id_method": _ID_METHOD[rid["method"]], "id_n_bytes": rid["id_bytes"],
+        "qe_addr": qe.get("feature_addr", 0) if qe.get("has") else 0,
+        "qe_bit": qe.get("bit", 0) if qe.get("has") else 0,
+        "read_mode": _READ_MODE[chip["read_mode"]], "vcc_mv": chip["vcc_mv"],
+        "bbm_off": bbm["offset"], "bbm_len": bbm["len"], "bbm_good": bbm["good"],
+        "oob_free_n": len(oob["free_regions"]), "oob_ecc_n": len(oob["ecc_regions"]),
+        "oob_free": _regions_to_pairs(oob["free_regions"]),
+        "oob_ecc": _regions_to_pairs(oob["ecc_regions"]),
+    }
+
+
+def pack(flat):
+    return struct.pack(
+        PACK_FORMAT,
+        flat["name"].encode()[:23].ljust(24, b"\x00"),
+        flat["page_size"], flat["spare_size"], flat["pages_per_block"], flat["total_blocks"],
+        flat["op_page_read"], flat["op_read_cache"], flat["op_get_feat"], flat["op_set_feat"],
+        flat["op_status_addr"], flat["op_cfg_addr"],
+        flat["ecc_en_bit"], flat["ecc_shift"], flat["ecc_mask"], *flat["ecc_map"],
+        flat["status2_reg"], flat["id_method"], flat["id_n_bytes"],
+        flat["qe_addr"], flat["qe_bit"], flat["read_mode"], flat["vcc_mv"],
+        flat["bbm_off"], flat["bbm_len"], flat["bbm_good"],
+        flat["oob_free_n"], flat["oob_ecc_n"], *flat["oob_free"], *flat["oob_ecc"],
+    )

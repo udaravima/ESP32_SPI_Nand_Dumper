@@ -1,5 +1,6 @@
 import pytest
 import chipdb
+import struct
 
 def test_load_resolves_two_chips():
     db = chipdb.load()
@@ -84,3 +85,27 @@ def test_validate_rejects_too_many_ecc_regions():
     c["profile"]["oob_layout"]["ecc_regions"] = [[0, 1]] * 5
     with pytest.raises(chipdb.ValidationError):
         chipdb.validate(c)
+
+def test_pack_is_110_bytes():
+    db = chipdb.load()
+    flat = chipdb.flatten(chipdb.get(db, "DS35Q1GA"))
+    blob = chipdb.pack(flat)
+    assert len(blob) == 110 == chipdb.PROFILE_SIZE
+
+def test_pack_ds35_known_fields():
+    db = chipdb.load()
+    flat = chipdb.flatten(chipdb.get(db, "DS35Q1GA"))
+    assert flat["name"] == "DS35Q1GA"
+    assert flat["page_size"] == 2112
+    assert flat["ecc_shift"] == 4 and flat["ecc_mask"] == 0x3
+    assert flat["ecc_map"][2] == chipdb.UNCOR
+    assert flat["qe_addr"] == 0xB0 and flat["qe_bit"] == 0x01
+    assert flat["bbm_off"] == 0 and flat["bbm_good"] == 0xFF
+    # name round-trips through the fixed 24-byte field, NUL-padded
+    blob = chipdb.pack(flat)
+    assert blob[:24] == b"DS35Q1GA".ljust(24, b"\x00")
+
+def test_micron_has_no_qe():
+    db = chipdb.load()
+    flat = chipdb.flatten(chipdb.get(db, "MT29F2G01ABAGD"))
+    assert flat["qe_addr"] == 0 and flat["qe_bit"] == 0
