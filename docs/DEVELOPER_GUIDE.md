@@ -8,6 +8,7 @@ chip, add a board, or change the wire protocol. For operating the tool, see the
 
 - [Architecture](#architecture)
 - [The chip registry and code generation](#the-chip-registry-and-code-generation)
+- [Vendor/profile architecture (Stage 1)](#vendorprofile-architecture-stage-1)
 - [Adding a chip](#adding-a-chip)
 - [Adding a board](#adding-a-board)
 - [The wire protocol](#the-wire-protocol)
@@ -32,7 +33,9 @@ be verified on real silicon.
 | [`dump_header.h`](../src/dump_header.h) / [`.cpp`](../src/dump_header.cpp) | 32-byte geometry header pack + CRC32 | ✅ host-testable |
 | [`config_store.h`](../src/config_store.h) / [`.cpp`](../src/config_store.cpp) | `nand_app_config_t`; `config_defaults()` / `config_validate()` clamp | ✅ host-testable |
 | [`config_nvs.cpp`](../src/config_nvs.cpp) | `config_load()` / `config_save()` — NVS blob via `Preferences` | ❌ hardware |
-| [`nand_ecc.h`](../src/nand_ecc.h) | `nand_ecc_uncorrectable()` / `nand_ecc_refresh_recommended()` — ECCS decode (datasheet Table 9) | ✅ host-testable |
+| [`nand_ecc.h`](../src/nand_ecc.h) | `nand_ecc_uncorrectable()` / `nand_ecc_refresh_recommended()` — ECCS decode (datasheet Table 9). Micron-specific; superseded on the device by `nand_profile` in Stage 2 | ✅ host-testable |
+| [`nand_profile.h`](../src/nand_profile.h) / [`.cpp`](../src/nand_profile.cpp) | `active_profile_t` wire struct (110 B, `static_assert`-pinned) + `nand_profile_severity()` data-driven ECC decode. Host/DB foundation — **not yet on the boot path** (Stage 1) | ✅ host-testable |
+| `nand_profiles_generated.h` | Generated resident `PROFILES[]` table (do not edit); not yet `#include`d by device code | ✅ data |
 | [`sys_info.h`](../src/sys_info.h) / [`.cpp`](../src/sys_info.cpp) | `sys_recommend_batch_pages()` — memory-aware batch sizing | ✅ host-testable |
 | [`sys_info_esp.cpp`](../src/sys_info_esp.cpp) | `sys_info_report()` / `sys_free_dma_bytes()` — runtime chip/heap query | ❌ hardware |
 | [`board_pins.h`](../src/board_pins.h) | Per-target pins + `NAND_SPI_HOST` | — macros |
@@ -54,6 +57,8 @@ size → WiFi → send the geometry header → stream pages.
 | [`verify_dump.py`](../verify_dump.py) | CRC-verdict health report + CRC-aware cross-dump repair (`choose_page_sources`, `majority_bytes`) |
 | [`tools/binary_compare_fix.py`](../tools/binary_compare_fix.py) | Majority-vote repair across multiple dumps (byte-level, no CRC verdicts) |
 | [`tools/gen_chips.py`](../tools/gen_chips.py) | Validate `chips.yml`, emit the C table |
+| [`tools/chipdb.py`](../tools/chipdb.py) | Load / fail-closed validate / flatten the `db/` profile database; byte-identical 110-byte packer; JEDEC-ID disambiguation |
+| [`tools/gen_profiles.py`](../tools/gen_profiles.py) | Emit the resident `PROFILES[]` header + golden test blob from `chipdb`'s flattener |
 
 The Python entry points all guard their side effects behind `if __name__ ==
 "__main__"` / `main()`, so they import cleanly for testing.
@@ -78,6 +83,42 @@ fields present; every `{mfr_id, dev_id}` unique; `spare_size < page_size`;
 `pages_per_block` a power of two; and, if `has_qe_bit`, that `qe_feature_addr` and
 `qe_bit` are given. `page_addr_bits = log2(pages_per_block)` is **derived** by the
 generator, not hand-entered.
+
+## Vendor/profile architecture (Stage 1)
+
+A newer, data-driven **`family → profile → chip`** model is being built to replace the
+single-vendor assumptions baked into `chips.yml` and `nand_ecc.h`. SPI NAND is only
+*partly* standardized: the command skeleton is common, but ECC-status encoding, OOB
+layout, the QE bit, and the read-ID method are vendor-specific and cannot live in shared
+code.
+
+**Stage 1 is host-side and additive — nothing here is on the device boot path yet.** The
+firmware still detects chips through `chips.yml` → `CHIPS[]` (`nand_chip_lookup`); the
+pieces below are the foundation Stage 2 will wire the device onto.
+
+- **`db/` — the three-layer database.** `db/families/` (bus/command-set, one `spi-nand`
+  today), `db/profiles/` (vendor ECC-scheme + OOB quirks, grouped and named), and
+  `db/chips/` (identity + geometry, each referencing a family and a profile). One YAML
+  file per entry, structured for later extraction to a community subrepo.
+- **`tools/chipdb.py` — the single flattener.** Loads and validates the DB
+  (**fail-closed**: a bad entry raises, it is never "loaded anyway"), then *flattens* the
+  three layers into one packed 110-byte `active_profile_t`. Named ECC `scheme`s expand to
+  a 16-entry severity map where any unnamed field value decodes to *uncorrectable*.
+  `resolve()` disambiguates shared JEDEC IDs (extra ID byte → cached choice →
+  fail-closed with the candidate list).
+- **`src/nand_profile.h` — the wire contract.** `active_profile_t` is the one flat struct
+  the device will hold in RAM; the decoder is `severity = ecc_map[(status >> shift) &
+  mask]` — no per-vendor branches. `static_assert(sizeof == 110)` pins the layout.
+- **`tools/gen_profiles.py`** renders the resident `PROFILES[]` header and the golden test
+  blob from `chipdb`'s *same* flattener, so a resident chip and a future host-pushed chip
+  are byte-identical by construction.
+
+**The host-flattens / device-trusts seam** is the safety-critical part: the host owns the
+DB and does all fuzzy validation; the device receives one pre-validated flat struct.
+[`test/test_profile/test_profile.cpp`](../test/test_profile/test_profile.cpp) guards it —
+it `memcpy`s the Python-packed golden blob into the C struct and asserts every field, so a
+field-order or padding drift fails a host test, never the device. The full rationale is in
+the design docs (see below).
 
 ## Adding a chip
 
@@ -159,10 +200,13 @@ together.
 | `native` | Host Unity tests for the pure modules |
 
 The `native` env needs two non-obvious settings: `test_build_src = yes` (so
-`pio test` compiles `src/`), and `build_src_filter = -<*> +<nand_chips.cpp>
-+<dump_header.cpp>` (so only the ESP-IDF-free modules compile on the host — the
-Arduino sources would not build natively). `framework = arduino` is set per-board,
-not in `[env]`, so the native env doesn't inherit it.
+`pio test` compiles `src/`), and a `build_src_filter` that lists only the
+ESP-IDF-free modules (`nand_chips.cpp`, `dump_header.cpp`, `config_store.cpp`,
+`sys_info.cpp`, `nand_profile.cpp`) — the Arduino sources would not build natively.
+`framework = arduino` is set per-board, not in `[env]`, so the native env doesn't
+inherit it. Two PlatformIO pre-hooks regenerate headers on every build:
+`gen_chips.py` (`chips.yml` → `CHIPS[]`) and `gen_profiles.py` (`db/` → the resident
+`PROFILES[]` header + the golden test blob).
 
 ## Testing
 
@@ -174,11 +218,15 @@ pio test -e native                    # pure C logic (lookup, row-address, heade
 
 What each layer covers:
 
-- **`python -m pytest`** — the generator's validation, `ecc_stripper` geometry
-  handling, `binary_compare_fix` majority vote, the wire header round-trip and
-  golden bytes, and `dump.py` header parsing / metadata.
+- **`python -m pytest`** — the generator's validation, the `chipdb.py` profile
+  database (load/validate/flatten, the byte-identical 110-byte packer, ID
+  disambiguation), `ecc_stripper` geometry handling, `binary_compare_fix` majority
+  vote, the wire header round-trip and golden bytes, and `dump.py` header parsing /
+  metadata.
 - **`pio test -e native`** — `nand_chip_lookup`, `nand_row_addr` (including the
-  regression test that block 1024 does not alias to row 0), and header pack/CRC.
+  regression test that block 1024 does not alias to row 0), header pack/CRC, the
+  data-driven ECC-severity decoder across every vendor scheme, and the
+  **golden-blob cross-check** that pins the Python packer to the C `active_profile_t`.
 - **Bench (manual, real hardware)** — SPI transactions, ECC on/off on the array,
   the quad self-test on real wiring, WiFi, and a full end-to-end dump. These
   cannot be unit-tested; the bench checklist is Task 14 of the implementation
@@ -211,3 +259,4 @@ The reasoning behind these decisions is captured in:
 
 - Spec: [`superpowers/specs/2026-08-15-nand-dumper-generalization-design.md`](superpowers/specs/2026-08-15-nand-dumper-generalization-design.md)
 - Plan: [`superpowers/plans/2026-08-15-nand-dumper-generalization.md`](superpowers/plans/2026-08-15-nand-dumper-generalization.md) (Task 14 is the hardware bench checklist)
+- Vendor/profile architecture — Spec: [`superpowers/specs/2026-08-23-vendor-profile-architecture-design.md`](superpowers/specs/2026-08-23-vendor-profile-architecture-design.md); Stage-1 Plan: [`superpowers/plans/2026-08-23-vendor-profile-host-foundation.md`](superpowers/plans/2026-08-23-vendor-profile-host-foundation.md)

@@ -6,6 +6,31 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Vendor/family profile architecture — Stage 1 (host foundation).** A data-driven
+  `family → profile → chip` model that groups vendor-specific quirks (ECC-status
+  encoding, OOB layout, Quad-Enable bit, read-ID method) instead of hardcoding one
+  vendor's assumptions across the codebase. This stage lands **host-side and additive**:
+  the firmware still auto-detects chips via `chips.yml` → `CHIPS[]`, and device
+  behavior is unchanged (verified by an `esp32dev` firmware build) until Stage 2 wires
+  the device onto it.
+  - `db/{families,profiles,chips}/*.yml` — the three-layer database. The two existing
+    chips are migrated in; `chips.yml` stays the live device path this stage.
+  - `tools/chipdb.py` — load → fail-closed validate → flatten → **byte-identical
+    110-byte pack** → JEDEC-ID collision disambiguation ladder. Named ECC `scheme`s
+    (generic2, micron3, gd_uc, xtx4, xtx_g0xa) expand to a full 16-entry severity map,
+    where any unnamed field value decodes to *uncorrectable* (fail-closed).
+  - `src/nand_profile.h` / `.cpp` — the flat `active_profile_t` wire struct
+    (`static_assert`-pinned at 110 bytes) and a pure, data-driven ECC-severity decoder
+    that replaces per-vendor `if` ladders with one indexed lookup.
+  - `tools/gen_profiles.py` — emits a resident `PROFILES[]` C header and a golden test
+    blob from the *same* flattener (a second PlatformIO pre-hook), so a resident chip
+    and a future host-pushed chip are byte-identical by construction.
+  - A native golden-blob cross-check (`test/test_profile/`) proves the Python packer and
+    the C struct agree byte-for-byte; `tests/test_chipdb.py` covers the host database.
+  - Design: `docs/superpowers/specs/2026-08-23-vendor-profile-architecture-design.md`
+    and the Stage-1 plan under `docs/superpowers/plans/`.
+
 ## [3.1.1] - 2026-08-17
 
 ### Fixed

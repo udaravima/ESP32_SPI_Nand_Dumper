@@ -103,6 +103,8 @@ Majority-votes across dumps to correct transmission errors, with a detailed repo
 
 Edit [chips.yml](chips.yml) (JEDEC ID from the serial log's `mfr_id`/`dev_id`), run `pio run`, and open a PR. See [CONTRIBUTING.md](CONTRIBUTING.md). Entries are validated at build time — a malformed one fails the build with a message naming the field.
 
+> A data-driven vendor **profile database** (`db/`) is being built to group vendor-specific ECC/OOB quirks (SPI NAND is only partly standardized). It is host-side foundation today and **not yet on the device path** — `chips.yml` is what the firmware uses. See the [Developer Guide](docs/DEVELOPER_GUIDE.md#vendorprofile-architecture-stage-1).
+
 ## NAND Details (MT29F2G01)
 
 | Parameter | Value |
