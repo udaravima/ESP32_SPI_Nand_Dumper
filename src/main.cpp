@@ -256,9 +256,14 @@ void apply_runtime_settings() {
 
   // Quad self-test: verify a quad read matches a single read, else fall back.
   if (cfg_read_mode == NAND_READ_QUAD) {
-    if (g_chip && g_chip->has_qe_bit)
+    if (g_profile) {
+      if (g_profile->qe_addr)   // 0 = no QE bit (e.g. Micron); non-zero for DS35/Winbond/GigaDevice
+        nand_set_feature(g_profile->qe_addr,
+                         nand_get_feature(g_profile->qe_addr) | g_profile->qe_bit);
+    } else if (g_chip && g_chip->has_qe_bit) {
       nand_set_feature(g_chip->qe_feature_addr,
                        nand_get_feature(g_chip->qe_feature_addr) | g_chip->qe_bit);
+    }
     uint32_t probe = nand_row_addr(1, 0, cfg_page_addr_bits);
     if (!nand_quad_selftest(probe, cfg_page_size)) {
       Serial.println("[!] Quad self-test FAILED — falling back to single x1");
@@ -509,14 +514,27 @@ void cmd_dump(bool verify) {
       // uncorrectable page, so surface it here — otherwise a damaged page passes
       // silently. (ECCS is only valid when ECC is enabled.)
       if (cfg_ecc_on) {
-        uint8_t eccs = nand_get_ecc_status();
-        if (nand_ecc_uncorrectable(eccs)) {
-          eccUncorrectable++;
-          if (eccUncorrectable <= 20)
-            Serial.printf("[ECC] UNCORRECTABLE page %u (block %d, page %d)\n",
-                          pagesDone, block, page);
-        } else if (nand_ecc_refresh_recommended(eccs)) {
-          eccRefresh++;
+        if (g_profile) {
+          uint8_t raw = nand_get_feature(NAND_FEATURE_STATUS);
+          nand_severity_t sev = nand_profile_severity(g_profile, raw);
+          if (sev == NAND_SEV_UNCORRECTABLE) {
+            eccUncorrectable++;
+            if (eccUncorrectable <= 20)
+              Serial.printf("[ECC] UNCORRECTABLE page %u (block %d, page %d)\n",
+                            pagesDone, block, page);
+          } else if (sev == NAND_SEV_CORRECTED_REFRESH) {
+            eccRefresh++;
+          }
+        } else {
+          uint8_t eccs = nand_get_ecc_status();
+          if (nand_ecc_uncorrectable(eccs)) {
+            eccUncorrectable++;
+            if (eccUncorrectable <= 20)
+              Serial.printf("[ECC] UNCORRECTABLE page %u (block %d, page %d)\n",
+                            pagesDone, block, page);
+          } else if (nand_ecc_refresh_recommended(eccs)) {
+            eccRefresh++;
+          }
         }
       }
 
