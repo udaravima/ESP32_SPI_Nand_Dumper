@@ -37,4 +37,8 @@ static_assert(sizeof(active_profile_t) == NAND_PROFILE_SIZE,
 
 nand_severity_t nand_profile_severity(const active_profile_t *p, uint8_t status);
 
+// Resident profile lookup by JEDEC id (searches the generated PROFILE_IDS table).
+// Returns NULL if no resident profile matches. dev2 disambiguation is Stage 3.
+const active_profile_t *nand_profile_lookup(uint8_t mfr, uint8_t dev);
+
 #endif // NAND_PROFILE_H

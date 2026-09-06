@@ -76,6 +76,24 @@ void test_resident_array_has_two_chips(void) {
   TEST_ASSERT_EQUAL_UINT32(2u, PROFILES_COUNT);
 }
 
+void test_profile_lookup_finds_ds35(void) {
+  const active_profile_t *p = nand_profile_lookup(0xE5, 0x71);
+  TEST_ASSERT_NOT_NULL(p);
+  TEST_ASSERT_EQUAL_STRING("DS35Q1GA", p->name);
+  TEST_ASSERT_EQUAL_UINT32(2112u, p->page_size);
+  TEST_ASSERT_EQUAL_UINT8(0xB0, p->qe_addr);   // the profile that carries the DS35 QE fix
+}
+
+void test_profile_lookup_finds_micron(void) {
+  const active_profile_t *p = nand_profile_lookup(0x2C, 0x24);
+  TEST_ASSERT_NOT_NULL(p);
+  TEST_ASSERT_EQUAL_STRING("MT29F2G01ABAGD", p->name);
+}
+
+void test_profile_lookup_unknown_is_null(void) {
+  TEST_ASSERT_NULL(nand_profile_lookup(0x00, 0x00));
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -88,5 +106,8 @@ int main(int, char **) {
   RUN_TEST(test_decode_xtx_g0xa);
   RUN_TEST(test_golden_blob_unpacks_to_ds35);
   RUN_TEST(test_resident_array_has_two_chips);
+  RUN_TEST(test_profile_lookup_finds_ds35);
+  RUN_TEST(test_profile_lookup_finds_micron);
+  RUN_TEST(test_profile_lookup_unknown_is_null);
   return UNITY_END();
 }
