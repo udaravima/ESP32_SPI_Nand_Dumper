@@ -7,6 +7,7 @@
 #include "config_store.h"
 #include "sys_info.h"
 #include "nand_ecc.h"
+#include "nand_profile.h"
 
 #define MAX_PAGE_SIZE 8192  // upper bound for buffer/transfer sizing
 
@@ -32,6 +33,7 @@ static bool     cfg_ecc_on          = false;   // global policy: OFF/raw
 // Detected chip
 static uint16_t g_chip_id = 0;
 static const nand_chip_t *g_chip = NULL;
+static const active_profile_t *g_profile = NULL;   // primary: resident profile match
 // ===================================================
 
 void cmd_dump(bool verify);
@@ -94,10 +96,12 @@ void show_menu() {
   Serial.println("========================================");
   Serial.println("  ESP32 SPI NAND Dumper v3.1.1 — Config");
   Serial.println("========================================");
-  if (g_chip) Serial.printf("  Detected: %s (0x%02X 0x%02X)\n",
-                            g_chip->name, g_chip_id >> 8, g_chip_id & 0xFF);
-  else        Serial.printf("  Detected: UNKNOWN (0x%02X 0x%02X) — manual geometry\n",
-                            g_chip_id >> 8, g_chip_id & 0xFF);
+  if (g_profile)   Serial.printf("  Detected: %s (0x%02X 0x%02X)\n",
+                                 g_profile->name, g_chip_id >> 8, g_chip_id & 0xFF);
+  else if (g_chip) Serial.printf("  Detected: %s (0x%02X 0x%02X)\n",
+                                 g_chip->name, g_chip_id >> 8, g_chip_id & 0xFF);
+  else             Serial.printf("  Detected: UNKNOWN (0x%02X 0x%02X) — manual geometry\n",
+                                 g_chip_id >> 8, g_chip_id & 0xFF);
   Serial.println("  -- Network --");
   Serial.printf( "  [1] WiFi SSID:       %s\n", cfg_ssid);
   Serial.printf( "  [2] WiFi Password:   %s\n", mask_password(cfg_pass).c_str());
@@ -345,10 +349,18 @@ void setup() {
   }
 
   g_chip_id = nand_read_id();
-  g_chip = nand_chip_lookup(g_chip_id >> 8, g_chip_id & 0xFF);
-  if (g_chip) {
-    Serial.printf("[*] Detected %s (0x%02X 0x%02X)\n",
-                  g_chip->name, g_chip_id >> 8, g_chip_id & 0xFF);
+  uint8_t mfr = g_chip_id >> 8, dev = g_chip_id & 0xFF;
+  g_profile = nand_profile_lookup(mfr, dev);
+  if (g_profile) {
+    Serial.printf("[*] Detected %s (0x%02X 0x%02X) [profile]\n", g_profile->name, mfr, dev);
+    cfg_page_size       = (int)g_profile->page_size;
+    cfg_spare_size      = (int)g_profile->spare_size;
+    cfg_pages_per_block = (int)g_profile->pages_per_block;
+    cfg_total_blocks    = (int)g_profile->total_blocks;
+    cfg_page_addr_bits  = log2_int((int)g_profile->pages_per_block);
+    cfg_ecc_on          = false;   // global policy OFF/raw; profiles carry no per-chip default
+  } else if ((g_chip = nand_chip_lookup(mfr, dev)) != NULL) {
+    Serial.printf("[*] Detected %s (0x%02X 0x%02X) [legacy]\n", g_chip->name, mfr, dev);
     cfg_page_size       = g_chip->page_size;
     cfg_spare_size      = g_chip->spare_size;
     cfg_pages_per_block = g_chip->pages_per_block;
@@ -357,8 +369,7 @@ void setup() {
     cfg_bad_mark        = g_chip->bad_block_mark;
     cfg_ecc_on          = g_chip->ecc_default_on;
   } else {
-    Serial.printf("[!] Unknown chip 0x%02X 0x%02X — using manual defaults\n",
-                  g_chip_id >> 8, g_chip_id & 0xFF);
+    Serial.printf("[!] Unknown chip 0x%02X 0x%02X — using manual defaults\n", mfr, dev);
   }
 
   // ---- Load saved settings (over detected defaults), then configure ----
