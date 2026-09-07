@@ -44,6 +44,11 @@ follow [Semantic Versioning](https://semver.org/).
 - **`ecc_stripper.py` is profile-aware:** re-resolves the chip from the dump metadata and
   uses the profile's bad-block-marker spec (offset/length/polarity/page) instead of the
   hardcoded first-spare-byte check. Behavior is unchanged for the current chips.
+- **Reserved Micron ECCS field values now fail closed.** On the profile ECC path, the
+  `micron3` scheme's datasheet-reserved status-field values (4, 6, 7) decode to
+  `NAND_SEV_UNCORRECTABLE` instead of being silently ignored by the legacy decoder — a
+  conservative, safe-direction change now reachable on real hardware since Micron is a
+  resident profile.
 
 ## [3.1.1] - 2026-08-17
 

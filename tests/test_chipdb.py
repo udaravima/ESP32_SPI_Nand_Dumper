@@ -171,6 +171,20 @@ def test_get_returns_independent_profile_copy():
     b = chipdb.get(db, "DS35Q1GA")
     assert b["profile"]["ecc"]["scheme"] == "generic2"   # not leaked via shared ref
 
+def test_get_returns_independent_geometry_copy():
+    db = chipdb.load()
+    a = chipdb.get(db, "DS35Q1GA")
+    a["geometry"]["page_size"] = 1
+    b = chipdb.get(db, "DS35Q1GA")
+    assert b["geometry"]["page_size"] == 2112   # not leaked via shared ref
+
 def test_expand_scheme_unknown_raises():
     with pytest.raises(chipdb.ValidationError):
         chipdb.expand_scheme("no_such_scheme")
+
+def test_validate_rejects_non_first_bbm_pages():
+    db = chipdb.load()
+    c = chipdb.get(db, "DS35Q1GA")
+    c["profile"]["oob_layout"]["bbm"]["pages"] = ["last"]
+    with pytest.raises(chipdb.ValidationError):
+        chipdb.validate(c)

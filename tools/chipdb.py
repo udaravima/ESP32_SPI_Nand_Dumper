@@ -55,7 +55,7 @@ def resolve_refs(db):
 
 def get(db, chip_name):
     resolve_refs(db)
-    c = dict(db.chips[chip_name])
+    c = copy.deepcopy(db.chips[chip_name])
     c["family"] = copy.deepcopy(db.families[c["family"]])
     c["profile"] = copy.deepcopy(db.profiles[c["profile"]])
     return c
@@ -119,6 +119,8 @@ def validate(chip):
     bbm = oob["bbm"]
     if bbm["offset"] + bbm["len"] > g["spare_size"]:
         raise ValidationError(f"{name}: bbm exceeds spare_size")
+    if bbm.get("pages", ["first"]) != ["first"]:
+        raise ValidationError(f"{name}: bbm.pages other than ['first'] not yet supported")
     # The flat struct caps OOB at 4 regions each (8 uint16 = 4 pairs); reject
     # rather than let _regions_to_pairs silently truncate a longer list.
     if len(oob["free_regions"]) > 4:

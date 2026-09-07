@@ -54,7 +54,7 @@ size → WiFi → send the geometry header → stream pages.
 | File | Responsibility |
 |---|---|
 | [`dump.py`](../dump.py) | Receive the stream; `parse_header`, `recv_exact`, `write_metadata`; network flow under `main()` |
-| [`ecc_stripper.py`](../ecc_stripper.py) | `strip()` spare/OOB → main-area image; `load_geometry()` from the sidecar |
+| [`ecc_stripper.py`](../ecc_stripper.py) | `strip()` spare/OOB → main-area image; `resolve_bbm()` re-resolves the profile-aware bad-block-marker spec from the dump's `chipdb` profile, falling back to the legacy first-byte default |
 | [`verify_dump.py`](../verify_dump.py) | CRC-verdict health report + CRC-aware cross-dump repair (`choose_page_sources`, `majority_bytes`) |
 | [`tools/binary_compare_fix.py`](../tools/binary_compare_fix.py) | Majority-vote repair across multiple dumps (byte-level, no CRC verdicts) |
 | [`tools/gen_chips.py`](../tools/gen_chips.py) | Validate `chips.yml`, emit the C table |

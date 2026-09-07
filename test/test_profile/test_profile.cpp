@@ -35,6 +35,16 @@ void test_decode_micron3(void) {
   TEST_ASSERT_EQUAL_INT(NAND_SEV_CORRECTED_REFRESH,    nand_profile_severity(&p, 0x50)); // field 5
 }
 
+void test_decode_micron3_reserved_values(void) {
+  // Datasheet-reserved ECCS field values (4, 6, 7) are unnamed in the micron3
+  // map and must fail closed to UNCORRECTABLE, not silently be ignored.
+  const uint8_t m[16] = {0,1,3,2, 3,2,3,3, 3,3,3,3, 3,3,3,3};
+  active_profile_t p = mk(4, 0x7, m);
+  TEST_ASSERT_EQUAL_INT(NAND_SEV_UNCORRECTABLE, nand_profile_severity(&p, 0x40)); // field 4 (reserved)
+  TEST_ASSERT_EQUAL_INT(NAND_SEV_UNCORRECTABLE, nand_profile_severity(&p, 0x60)); // field 6 (reserved)
+  TEST_ASSERT_EQUAL_INT(NAND_SEV_UNCORRECTABLE, nand_profile_severity(&p, 0x70)); // field 7 (reserved)
+}
+
 void test_decode_xtx4_reaches_index_15(void) {
   // [7:4], mask 0xF, uncorrectable at field 0xF — the Wall-1 out-of-bounds case
   uint8_t m[16]; m[0]=0; for (int i=1;i<15;i++) m[i]=1; m[15]=3;
@@ -102,6 +112,7 @@ int main(int, char **) {
   RUN_TEST(test_active_profile_is_110_bytes);
   RUN_TEST(test_decode_generic2);
   RUN_TEST(test_decode_micron3);
+  RUN_TEST(test_decode_micron3_reserved_values);
   RUN_TEST(test_decode_xtx4_reaches_index_15);
   RUN_TEST(test_decode_xtx_g0xa);
   RUN_TEST(test_golden_blob_unpacks_to_ds35);

@@ -3,8 +3,10 @@
 Geometry comes from the dump's .meta.json sidecar (written by dump.py),
 or from --page-size/--spare-size/--pages-per-block overrides.
 
-Bad blocks (first spare byte != good marker on a block's first page) are
-replaced with 0xFF padding so filesystem offsets stay aligned.
+The bad-block marker (offset, length, good value, which pages to check) is
+resolved from the dump's profile via `chipdb`, when --meta is given and the
+chip is present in db/. Otherwise it falls back to the legacy default: offset
+0, length 1, good 0xFF, checking only each block's first page.
 
 Usage:
     python3 ecc_stripper.py raw.bin clean.bin --meta raw.bin.meta.json
@@ -15,11 +17,6 @@ import json
 import os
 import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "tools"))
-
-
-def load_geometry(meta_path):
-    with open(meta_path) as f:
-        return json.load(f)["geometry"]
 
 
 def resolve_bbm(meta):
