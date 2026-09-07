@@ -145,3 +145,32 @@ def test_resolve_ambiguous_raises_with_candidates(tmp_path):
 def test_resolve_ambiguous_honors_cached_choice(tmp_path):
     db = _twin_db(tmp_path)
     assert chipdb.resolve(db, 0xE5, 0x71, cached_name="TWIN_A")["name"] == "TWIN_A"
+
+def test_schema_ver_is_one():
+    assert chipdb.SCHEMA_VER == 1
+
+def test_validate_rejects_oob_region_past_spare():
+    db = chipdb.load()
+    c = chipdb.get(db, "DS35Q1GA")
+    sp = c["geometry"]["spare_size"]
+    c["profile"]["oob_layout"]["free_regions"] = [[sp - 1, 4]]   # off+len > spare
+    with pytest.raises(chipdb.ValidationError):
+        chipdb.validate(c)
+
+def test_validate_rejects_multibyte_name_over_23_bytes():
+    db = chipdb.load()
+    c = chipdb.get(db, "DS35Q1GA")
+    c["name"] = "é" * 22          # 22 chars but 44 UTF-8 bytes
+    with pytest.raises(chipdb.ValidationError):
+        chipdb.validate(c)
+
+def test_get_returns_independent_profile_copy():
+    db = chipdb.load()
+    a = chipdb.get(db, "DS35Q1GA")
+    a["profile"]["ecc"]["scheme"] = "MUTATED"
+    b = chipdb.get(db, "DS35Q1GA")
+    assert b["profile"]["ecc"]["scheme"] == "generic2"   # not leaked via shared ref
+
+def test_expand_scheme_unknown_raises():
+    with pytest.raises(chipdb.ValidationError):
+        chipdb.expand_scheme("no_such_scheme")

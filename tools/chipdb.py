@@ -1,4 +1,5 @@
 """Load / validate / flatten the three-layer NAND chip database (db/)."""
+import copy
 import glob
 import os
 import struct
@@ -55,8 +56,8 @@ def resolve_refs(db):
 def get(db, chip_name):
     resolve_refs(db)
     c = dict(db.chips[chip_name])
-    c["family"] = db.families[c["family"]]
-    c["profile"] = db.profiles[c["profile"]]
+    c["family"] = copy.deepcopy(db.families[c["family"]])
+    c["profile"] = copy.deepcopy(db.profiles[c["profile"]])
     return c
 
 
@@ -94,8 +95,8 @@ def expand_scheme(name):
 def validate(chip):
     g = chip["geometry"]
     name = chip["name"]
-    if len(name) > 23:
-        raise ValidationError(f"{name!r}: name exceeds 23 chars (no room for NUL in name[24])")
+    if len(name.encode()) > 23:
+        raise ValidationError(f"{name!r}: name exceeds 23 bytes (no room for NUL in name[24])")
     if g["spare_size"] >= g["page_size"]:
         raise ValidationError(f"{name}: spare_size must be < page_size")
     ppb = g["pages_per_block"]
@@ -124,7 +125,14 @@ def validate(chip):
         raise ValidationError(f"{name}: oob free_regions exceeds 4")
     if len(oob["ecc_regions"]) > 4:
         raise ValidationError(f"{name}: oob ecc_regions exceeds 4")
+    # Validate that all OOB regions fit within spare_size (spec §6 gap)
+    for label, regs in (("free", oob["free_regions"]), ("ecc", oob["ecc_regions"])):
+        for off, ln in regs:
+            if off + ln > g["spare_size"]:
+                raise ValidationError(f"{name}: oob {label} region [{off},{ln}] exceeds spare_size")
 
+
+SCHEMA_VER = 1   # bumps when the flat active_profile_t layout changes (Stage 3 push envelope stamps it)
 
 PROFILE_SIZE = 110
 # Matches active_profile_t (packed, little-endian). Field order is load-bearing.
