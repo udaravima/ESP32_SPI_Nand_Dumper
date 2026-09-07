@@ -30,3 +30,34 @@ def test_strip_2112_geometry(tmp_path):
     _make_dump(inp, 2112, 64, 64, blocks=2, bad_blocks=set())
     ecc_stripper.strip(inp, out, 2112, 64, 64)
     assert os.path.getsize(out) == 2 * 64 * 2048
+
+
+def test_resolve_bbm_from_meta_ds35():
+    """Test that resolve_bbm fetches DS35 profile from chipdb via meta."""
+    meta = {"geometry": {"mfr_id": 0xE5, "dev_id": 0x71,
+                         "page_size": 2112, "spare_size": 64, "pages_per_block": 64}}
+    bbm = ecc_stripper.resolve_bbm(meta)
+    assert bbm is not None
+    assert bbm["offset"] == 0 and bbm["good"] == 0xFF
+
+
+def test_resolve_bbm_unknown_chip_is_none():
+    """Test that resolve_bbm returns None for unknown chip."""
+    meta = {"geometry": {"mfr_id": 0x00, "dev_id": 0x00}}
+    assert ecc_stripper.resolve_bbm(meta) is None
+
+
+def test_strip_flags_bad_block_at_profile_offset(tmp_path):
+    """Test that strip() uses custom bbm offset to detect bad blocks."""
+    # 4 bytes main + 4 bytes spare, 2 pages/block, 2 blocks. bbm offset 1 in spare.
+    ps, ss, ppb = 8, 4, 2
+    good, offbyte = 0xFF, 1
+    page_ok  = b"\xAA\xAA\xAA\xAA" + b"\xFF\xFF\xFF\xFF"
+    page_bad = b"\xBB\xBB\xBB\xBB" + b"\xFF\x00\xFF\xFF"  # spare[offset=1] != good
+    raw = tmp_path / "raw.bin"
+    raw.write_bytes(page_ok + page_ok + page_bad + page_ok)     # block1 page0 marks bad
+    out = tmp_path / "clean.bin"
+    bad = ecc_stripper.strip(str(raw), str(out), ps, ss, ppb,
+                             bbm={"offset": offbyte, "len": 1, "good": good, "pages": ["first"]})
+    assert bad == [1]                       # block 1 flagged bad
+    assert out.read_bytes()[8:12] == b"\xFF\xFF\xFF\xFF"   # block1 main replaced with 0xFF pad

@@ -13,6 +13,8 @@ Usage:
 import argparse
 import json
 import os
+import sys
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), "tools"))
 
 
 def load_geometry(meta_path):
@@ -20,17 +22,37 @@ def load_geometry(meta_path):
         return json.load(f)["geometry"]
 
 
-def strip(in_path, out_path, page_size, spare_size, pages_per_block,
-          bad_mark=0x00, good=0xFF):
+def resolve_bbm(meta):
+    """Re-resolve the chip's bad-block-marker spec from the dump metadata via chipdb.
+    Returns {offset, len, good, pages} or None if the chip is not in db/."""
+    g = meta.get("geometry", {})
+    if "mfr_id" not in g or "dev_id" not in g:
+        return None
+    try:
+        import chipdb
+        db = chipdb.load()
+        chip = chipdb.resolve(db, g["mfr_id"], g["dev_id"])
+        return chipdb.get(db, chip["name"])["profile"]["oob_layout"]["bbm"]
+    except Exception:
+        return None
+
+
+def strip(in_path, out_path, page_size, spare_size, pages_per_block, bbm=None):
+    if bbm is None:
+        bbm = {"offset": 0, "len": 1, "good": 0xFF, "pages": ["first"]}
     main = page_size - spare_size
+    off, blen, good = bbm["offset"], bbm["len"], bbm["good"]
+    check_first = "first" in bbm.get("pages", ["first"])
     total_pages = os.path.getsize(in_path) // page_size
     bad_blocks = []
     with open(in_path, "rb") as raw, open(out_path, "wb") as clean:
         for idx in range(total_pages):
             page = raw.read(page_size)
             block = idx // pages_per_block
-            if idx % pages_per_block == 0 and page[main] != good:
-                bad_blocks.append(block)
+            if check_first and idx % pages_per_block == 0:
+                marker = page[main + off: main + off + blen]
+                if any(b != good for b in marker):
+                    bad_blocks.append(block)
             if block in bad_blocks:
                 clean.write(bytes([good]) * main)
             else:
@@ -47,14 +69,18 @@ def main():
     ap.add_argument("--spare-size", type=int)
     ap.add_argument("--pages-per-block", type=int)
     a = ap.parse_args()
+    bbm = None
     if a.meta:
-        g = load_geometry(a.meta)
+        with open(a.meta) as f:
+            meta = json.load(f)
+        g = meta.get("geometry", {})
         ps, ss, ppb = g["page_size"], g["spare_size"], g["pages_per_block"]
+        bbm = resolve_bbm(meta)
     else:
         if None in (a.page_size, a.spare_size, a.pages_per_block):
             ap.error("provide --meta OR all of --page-size/--spare-size/--pages-per-block")
         ps, ss, ppb = a.page_size, a.spare_size, a.pages_per_block
-    bad = strip(a.input, a.output, ps, ss, ppb)
+    bad = strip(a.input, a.output, ps, ss, ppb, bbm=bbm)
     print(f"[*] {len(bad)} bad block(s): {bad}")
     print(f"[*] wrote {a.output}")
 
