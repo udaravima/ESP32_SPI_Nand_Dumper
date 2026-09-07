@@ -31,6 +31,20 @@ follow [Semantic Versioning](https://semver.org/).
   - Design: `docs/superpowers/specs/2026-08-23-vendor-profile-architecture-design.md`
     and the Stage-1 plan under `docs/superpowers/plans/`.
 
+### Changed
+- **Device read path is now profile-first (Stage 2).** The firmware detects the chip
+  against the `db/` profile table (`nand_profile_lookup` over `PROFILE_IDS[]`/`PROFILES[]`)
+  and drives geometry, ECC-status decoding, and the Quad-Enable write from the resolved
+  `active_profile_t`. The legacy `chips.yml` → `CHIPS[]` path is kept as a compiled
+  fallback (used only for a chip present in `chips.yml` but not `db/`); the unknown-chip
+  manual-geometry raw dump is unchanged.
+  - **Dosilicon DS35x1GA fixes land on-device:** correct 2-bit `[5:4]` ECC-status decode
+    (was mis-read with Micron's 3-bit `[6:4]` scheme) and the Quad-Enable bit at `B0[0]`
+    (was never set). On-silicon verification is pending a hardware bench.
+- **`ecc_stripper.py` is profile-aware:** re-resolves the chip from the dump metadata and
+  uses the profile's bad-block-marker spec (offset/length/polarity/page) instead of the
+  hardcoded first-spare-byte check. Behavior is unchanged for the current chips.
+
 ## [3.1.1] - 2026-08-17
 
 ### Fixed

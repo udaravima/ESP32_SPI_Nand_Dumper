@@ -3,13 +3,11 @@
 The chip registry lives in [`chips.yml`](chips.yml). Adding your chip is a few
 lines of YAML plus a pull request — no C required.
 
-> **Heads up — a layered profile database is being built.** A data-driven
-> `family → profile → chip` database under [`db/`](db/) has landed as host-side
-> foundation (see the
-> [Developer Guide](docs/DEVELOPER_GUIDE.md#vendorprofile-architecture-stage-1)).
-> It is **not yet on the device path** — for a chip the firmware should detect and
-> dump *today*, `chips.yml` below is still the place. Wiring the device onto `db/`
-> is Stage 2; until then, add device chips here.
+> **The device now detects chips from the `db/` profile database.** Add a new chip as a
+> `db/chips/<PART>.yml` entry referencing a `db/profiles/<vendor>.yml` (see the
+> [Developer Guide](docs/DEVELOPER_GUIDE.md#vendorprofile-architecture-stage-1) for the
+> layer model), then run `pio run` to regenerate the resident table. The legacy
+> `chips.yml` below still works as a compiled fallback for chips not yet in `db/`.
 
 ## Steps
 

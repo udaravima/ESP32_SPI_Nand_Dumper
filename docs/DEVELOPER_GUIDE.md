@@ -34,8 +34,9 @@ be verified on real silicon.
 | [`config_store.h`](../src/config_store.h) / [`.cpp`](../src/config_store.cpp) | `nand_app_config_t`; `config_defaults()` / `config_validate()` clamp | ✅ host-testable |
 | [`config_nvs.cpp`](../src/config_nvs.cpp) | `config_load()` / `config_save()` — NVS blob via `Preferences` | ❌ hardware |
 | [`nand_ecc.h`](../src/nand_ecc.h) | `nand_ecc_uncorrectable()` / `nand_ecc_refresh_recommended()` — ECCS decode (datasheet Table 9). Micron-specific; superseded on the device by `nand_profile` in Stage 2 | ✅ host-testable |
-| [`nand_profile.h`](../src/nand_profile.h) / [`.cpp`](../src/nand_profile.cpp) | `active_profile_t` wire struct (110 B, `static_assert`-pinned) + `nand_profile_severity()` data-driven ECC decode. Host/DB foundation — **not yet on the boot path** (Stage 1) | ✅ host-testable |
-| `nand_profiles_generated.h` | Generated resident `PROFILES[]` table (do not edit); not yet `#include`d by device code | ✅ data |
+| [`nand_profile.h`](../src/nand_profile.h) / [`.cpp`](../src/nand_profile.cpp) | `active_profile_t` wire struct (110 B, `static_assert`-pinned) + `nand_profile_severity()` data-driven ECC decode. **On the device boot path as of Stage 2** (via `nand_profile_lookup`) | ✅ host-testable |
+| [`nand_profile_lookup.cpp`](../src/nand_profile_lookup.cpp) | `nand_profile_lookup(mfr, dev)` — resident JEDEC-id → profile lookup over `PROFILE_IDS[]` | ✅ host-testable |
+| `nand_profiles_generated.h` | Generated resident `PROFILES[]` + `PROFILE_IDS[]` tables (do not edit); consumed by `nand_profile_lookup` | ✅ data |
 | [`sys_info.h`](../src/sys_info.h) / [`.cpp`](../src/sys_info.cpp) | `sys_recommend_batch_pages()` — memory-aware batch sizing | ✅ host-testable |
 | [`sys_info_esp.cpp`](../src/sys_info_esp.cpp) | `sys_info_report()` / `sys_free_dma_bytes()` — runtime chip/heap query | ❌ hardware |
 | [`board_pins.h`](../src/board_pins.h) | Per-target pins + `NAND_SPI_HOST` | — macros |
@@ -44,7 +45,7 @@ be verified on real silicon.
 | [`main.cpp`](../src/main.cpp) | Boot flow, config menu, dump loop, header emission | ❌ hardware |
 
 **Boot flow** (`main.cpp` → `setup()`): bring SPI up at 1 MHz → read `9Fh` →
-`nand_chip_lookup` → pre-fill geometry → run the menu → apply ECC/read-mode →
+`nand_profile_lookup` (then fallback to `nand_chip_lookup` if not found) → pre-fill geometry → run the menu → apply ECC/read-mode →
 (if quad) self-test with fallback → allocate the page buffer to the real page
 size → WiFi → send the geometry header → stream pages.
 
@@ -92,9 +93,12 @@ single-vendor assumptions baked into `chips.yml` and `nand_ecc.h`. SPI NAND is o
 layout, the QE bit, and the read-ID method are vendor-specific and cannot live in shared
 code.
 
-**Stage 1 is host-side and additive — nothing here is on the device boot path yet.** The
-firmware still detects chips through `chips.yml` → `CHIPS[]` (`nand_chip_lookup`); the
-pieces below are the foundation Stage 2 will wire the device onto.
+**As of Stage 2 the device boot path is profile-first.** `setup()` reads the JEDEC id,
+calls `nand_profile_lookup` (the generated `PROFILE_IDS[]` → `PROFILES[]` table), and
+drives geometry, the ECC-status decode (`nand_profile_severity`), and the Quad-Enable
+write from the resolved `active_profile_t`. A chip not in `db/` falls back to the legacy
+`nand_chip_lookup`/`CHIPS[]` path; an unknown chip still gets manual geometry. The
+`chips.yml` → `CHIPS[]` path is retained as that fallback.
 
 - **`db/` — the three-layer database.** `db/families/` (bus/command-set, one `spi-nand`
   today), `db/profiles/` (vendor ECC-scheme + OOB quirks, grouped and named), and
