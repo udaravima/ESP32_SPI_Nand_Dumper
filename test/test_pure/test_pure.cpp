@@ -30,6 +30,27 @@ void test_row_addr_last_page_of_2gbit(void) {
   TEST_ASSERT_EQUAL_UINT32(131071u, nand_row_addr(2047, 63, 6));
 }
 
+void test_lookup_micron_is_two_plane(void) {
+  TEST_ASSERT_EQUAL_UINT8(2, nand_chip_lookup(0x2C, 0x24)->planes);
+}
+
+void test_plane_bit_sits_above_main_area(void) {
+  TEST_ASSERT_EQUAL_UINT8(12, nand_plane_bit(2048));  // M79A: CA[11:0] + plane select
+  TEST_ASSERT_EQUAL_UINT8(13, nand_plane_bit(4096));
+}
+
+void test_cache_column_selects_odd_block_plane(void) {
+  // MT29F2G01: 64 pages/block, plane = block & 1 (RA6), plane bit 12.
+  TEST_ASSERT_EQUAL_UINT16(0x0000, nand_cache_column(nand_row_addr(0, 5, 6), 6, 2, 12));
+  TEST_ASSERT_EQUAL_UINT16(0x1000, nand_cache_column(nand_row_addr(1, 0, 6), 6, 2, 12));
+  TEST_ASSERT_EQUAL_UINT16(0x1000, nand_cache_column(nand_row_addr(2047, 63, 6), 6, 2, 12));
+  TEST_ASSERT_EQUAL_UINT16(0x0000, nand_cache_column(nand_row_addr(2046, 63, 6), 6, 2, 12));
+}
+
+void test_cache_column_is_zero_on_single_plane(void) {
+  TEST_ASSERT_EQUAL_UINT16(0, nand_cache_column(nand_row_addr(1, 0, 6), 6, 1, 12));
+}
+
 void test_row_addr_masks_page_field(void) {
   TEST_ASSERT_EQUAL_UINT32((5u << 6) | 3u, nand_row_addr(5, 3, 6));
 }
@@ -130,6 +151,10 @@ int main(int, char **) {
   RUN_TEST(test_row_addr_block1024_does_not_alias_zero);
   RUN_TEST(test_row_addr_last_page_of_2gbit);
   RUN_TEST(test_row_addr_masks_page_field);
+  RUN_TEST(test_lookup_micron_is_two_plane);
+  RUN_TEST(test_plane_bit_sits_above_main_area);
+  RUN_TEST(test_cache_column_selects_odd_block_plane);
+  RUN_TEST(test_cache_column_is_zero_on_single_plane);
   RUN_TEST(test_header_pack_layout_and_crc);
   RUN_TEST(test_crc32_canonical_check_value);
   RUN_TEST(test_config_defaults_have_empty_wifi);

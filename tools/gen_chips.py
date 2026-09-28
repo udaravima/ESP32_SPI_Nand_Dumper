@@ -24,6 +24,11 @@ def validate(chips):
         if key in seen:
             raise ValueError(f"{name}: duplicate JEDEC id, also used by {seen[key]}")
         seen[key] = name
+        planes = c.get("planes", 1)
+        if planes not in (1, 2, 4):
+            raise ValueError(f"{name}: planes must be 1, 2 or 4")
+        if c["total_blocks"] % planes != 0:
+            raise ValueError(f"{name}: total_blocks must divide evenly across planes")
         if c["has_qe_bit"]:
             for k in ("qe_feature_addr", "qe_bit"):
                 if k not in c:
@@ -37,10 +42,10 @@ def _row(name, c):
     qe = "true" if c["has_qe_bit"] else "false"
     qa = c.get("qe_feature_addr", 0)
     qb = c.get("qe_bit", 0)
-    return ('{ "%s", 0x%02X, 0x%02X, %d, %d, %d, %d, %d, 0x%02X, %s, 0x%02X, 0x%02X, %s, %d }'
+    return ('{ "%s", 0x%02X, 0x%02X, %d, %d, %d, %d, %d, 0x%02X, %s, 0x%02X, 0x%02X, %s, %d, %d }'
             % (name, c["mfr_id"], c["dev_id"], c["page_size"], c["spare_size"],
                ppb, c["total_blocks"], bits, c["bad_block_mark"], qe, qa, qb,
-               ecc, c["vcc_mv"]))
+               ecc, c["vcc_mv"], c.get("planes", 1)))
 
 
 def render_header(chips):

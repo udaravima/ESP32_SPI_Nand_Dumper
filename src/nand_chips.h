@@ -19,6 +19,7 @@ typedef struct {
   uint8_t  qe_bit;
   bool     ecc_default_on;
   uint16_t vcc_mv;
+  uint8_t  planes;           // 1, or 2 for multi-plane parts (plane = block LSBs)
 } nand_chip_t;
 
 const nand_chip_t *nand_chip_lookup(uint8_t mfr_id, uint8_t dev_id);

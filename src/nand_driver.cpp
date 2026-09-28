@@ -7,6 +7,9 @@ static spi_device_handle_t s_spi;
 static spi_device_interface_config_t s_devcfg;  // kept so nand_set_clock can re-add the device
 static nand_read_mode_t s_read_mode = NAND_READ_SINGLE;
 static uint8_t *s_verify_buf = NULL;
+// Plane selection for multi-plane dies (see nand_cache_column()).
+static uint8_t  s_planes = 1, s_page_addr_bits = 6, s_plane_bit = 12;
+static uint16_t s_cache_col = 0;   // column (incl. plane bit) of the last PAGE READ
 
 esp_err_t nand_init(const nand_config_t *config, int max_page_size) {
   s_read_mode = config->read_mode;
@@ -98,7 +101,15 @@ void nand_wait_ready(void) {
   } while (status & NAND_STATUS_OIP);
 }
 
+void nand_set_plane_config(uint8_t planes, uint8_t page_addr_bits, uint32_t main_size) {
+  s_planes = planes ? planes : 1;
+  s_page_addr_bits = page_addr_bits;
+  s_plane_bit = nand_plane_bit(main_size);
+  s_cache_col = 0;
+}
+
 void nand_page_read_to_cache(uint32_t row_addr) {
+  s_cache_col = nand_cache_column(row_addr, s_page_addr_bits, s_planes, s_plane_bit);
   spi_transaction_ext_t t = {};
   t.base.flags = SPI_TRANS_VARIABLE_ADDR;
   t.base.cmd = 0x13;
@@ -111,7 +122,7 @@ void nand_read_cache_single(uint8_t *buf, int len) {
   spi_transaction_ext_t t = {};
   t.base.flags = SPI_TRANS_VARIABLE_ADDR;
   t.base.cmd = 0x0B;         // READ FROM CACHE (fast)
-  t.base.addr = 0x000000;    // col addr(16) + dummy(8)
+  t.base.addr = (uint32_t)s_cache_col << 8;  // col addr(16, plane bit incl.) + dummy(8)
   t.address_bits = 24;
   t.base.rxlength = len * 8;
   t.base.rx_buffer = buf;
@@ -123,7 +134,7 @@ void nand_read_cache_quad(uint8_t *buf, int len) {
   // QIO puts the DATA phase on 4 lines; address stays single (1-1-4) — matches 6Bh.
   t.base.flags = SPI_TRANS_VARIABLE_ADDR | SPI_TRANS_MODE_QIO;
   t.base.cmd = 0x6B;         // READ FROM CACHE x4
-  t.base.addr = 0x000000;    // col addr(16) + dummy(8)
+  t.base.addr = (uint32_t)s_cache_col << 8;  // col addr(16, plane bit incl.) + dummy(8)
   t.address_bits = 24;
   t.base.rxlength = len * 8;
   t.base.rx_buffer = buf;

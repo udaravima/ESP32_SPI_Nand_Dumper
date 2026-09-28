@@ -8,6 +8,7 @@ chips:
     spare_size:      128
     pages_per_block: 64
     total_blocks:    2048
+    planes:          2        # block RA6 selects the plane; cache reads must carry it
     bad_block_mark:  0x00
     has_qe_bit:      false    # Micron: quad needs no enable bit
     ecc_default:     off      # global policy is off/raw

@@ -6,6 +6,19 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- **Odd blocks on 2-plane chips were read from the wrong plane.** The READ FROM
+  CACHE column address never carried the plane-select bit (bit 12 for a 2048-byte
+  page; block bit RA6 selects the plane per the Micron M79A datasheet). On the
+  2-plane MT29F2G01, every page of each odd block is expected to read back as the last page of
+  the preceding even block. The dump was consistent across runs, so CRC and
+  verify could not catch it. `chips.yml` gains an optional `planes` field
+  (MT29F2G01 = 2), and the driver now sets the plane bit on every cache read.
+
+### Added
+- `tools/check_planes.py` finds that signature in existing dumps so affected
+  ones can be re-taken.
+
 ## [3.1.1] - 2026-08-17
 
 ### Fixed
