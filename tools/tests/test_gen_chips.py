@@ -41,3 +41,16 @@ def test_render_emits_row_with_derived_page_addr_bits():
     assert '{ "MT29F2G01ABAGD", 0x2C, 0x24, 2176, 128, 64, 2048, 6,' in out
     assert "false" in out and "3300" in out
     assert "CHIPS_COUNT" in out
+
+
+def test_validate_rejects_bad_plane_count():
+    bad = dict(BASE); bad["planes"] = 3
+    with pytest.raises(ValueError, match="planes"):
+        validate({"X": bad})
+
+
+def test_render_defaults_to_one_plane_and_emits_two():
+    one = render_header({"A": dict(BASE)})
+    assert "3300, 1 }" in one
+    two = dict(BASE); two["planes"] = 2
+    assert "3300, 2 }" in render_header({"A": two})

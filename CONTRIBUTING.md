@@ -27,6 +27,11 @@ lines of YAML plus a pull request — no C required.
        notes: "cite the datasheet here"
    ```
 
+   For multi-plane chips (the datasheet's block address says a bit such as
+   `RA6` "controls the plane selection", e.g. Micron MT29F2G01), add
+   `planes: 2`. Omitting it means a single plane; getting it wrong makes every
+   odd block read back the other plane's data.
+
    For chips that need a Quad-Enable bit (Winbond W25N, GigaDevice GD5F), add:
 
    ```yaml

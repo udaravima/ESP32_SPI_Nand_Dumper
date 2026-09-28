@@ -33,6 +33,9 @@ void      nand_set_feature(uint8_t addr, uint8_t value);
 void      nand_set_ecc(bool on);
 uint8_t   nand_get_ecc_status(void);          // 3-bit field
 uint16_t  nand_read_id(void);
+// Multi-plane geometry: page reads remember the row's plane and the next
+// cache read selects it. planes = 1 (the default) keeps column 0.
+void      nand_set_plane_config(uint8_t planes, uint8_t page_addr_bits, uint32_t main_size);
 void      nand_page_read_to_cache(uint32_t row_addr);
 void      nand_read_cache(uint8_t *buf, int len);
 void      nand_read_cache_single(uint8_t *buf, int len);

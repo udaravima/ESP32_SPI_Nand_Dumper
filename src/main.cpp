@@ -27,6 +27,7 @@ static int      cfg_spare_size       = 128;
 static int      cfg_pages_per_block = 64;
 static int      cfg_total_blocks    = 2048;
 static int      cfg_page_addr_bits  = 6;
+static int      cfg_planes          = 1;   // 2 on multi-plane parts (MT29F2G01)
 static uint8_t  cfg_bad_mark        = 0x00;
 static bool     cfg_ecc_on          = false;   // global policy: OFF/raw
 // Detected chip
@@ -249,6 +250,9 @@ void apply_runtime_settings() {
 
   nand_set_read_mode(cfg_read_mode);
   nand_set_ecc(cfg_ecc_on);
+  // Before any page read: multi-plane dies need the plane bit on every cache
+  // read, or odd blocks come back as the other plane's cache contents.
+  nand_set_plane_config(cfg_planes, cfg_page_addr_bits, cfg_page_size - cfg_spare_size);
 
   // Quad self-test: verify a quad read matches a single read, else fall back.
   if (cfg_read_mode == NAND_READ_QUAD) {
@@ -265,9 +269,10 @@ void apply_runtime_settings() {
     }
   }
 
-  Serial.printf("[*] Geometry: %d blocks x %d pages x %d bytes = %.1f MB\n",
+  Serial.printf("[*] Geometry: %d blocks x %d pages x %d bytes = %.1f MB (%d plane%s)\n",
                 cfg_total_blocks, cfg_pages_per_block, cfg_page_size,
-                (float)cfg_total_blocks * cfg_pages_per_block * cfg_page_size / (1024.0 * 1024.0));
+                (float)cfg_total_blocks * cfg_pages_per_block * cfg_page_size / (1024.0 * 1024.0),
+                cfg_planes, cfg_planes == 1 ? "" : "s");
   Serial.printf("[*] ECC: %s | Read: %s | Clock: %d Hz\n",
                 cfg_ecc_on ? "ON" : "OFF",
                 cfg_read_mode == NAND_READ_QUAD ? "Quad x4" : "Single x1",
@@ -354,6 +359,7 @@ void setup() {
     cfg_pages_per_block = g_chip->pages_per_block;
     cfg_total_blocks    = g_chip->total_blocks;
     cfg_page_addr_bits  = g_chip->page_addr_bits;
+    cfg_planes          = g_chip->planes;
     cfg_bad_mark        = g_chip->bad_block_mark;
     cfg_ecc_on          = g_chip->ecc_default_on;
   } else {

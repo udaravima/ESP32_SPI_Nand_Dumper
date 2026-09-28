@@ -258,6 +258,16 @@ python3 verify_dump.py d1.bin d2.bin d3.bin -o fixed.bin   # CRC-aware repair
 
 It reports how many pages came from a known-good copy vs needed majority voting.
 
+**Checking an older MT29F2G01 dump for the plane-select bug.** Firmware before
+the plane-select fix read every odd block of 2-plane chips from the wrong plane:
+each page of an odd block is expected to read back as a copy of the previous even block's last
+page. CRC and verify can't catch this because the mistake is identical on every
+run. Check an existing dump with:
+
+```bash
+python3 tools/check_planes.py target/dump.bin   # exit 1 = affected, re-dump it
+```
+
 ## Understanding the raw layout
 
 Each raw page for the MT29F2G01 is **2176 bytes = 2048 main + 128 spare**:
@@ -277,6 +287,7 @@ Each raw page for the MT29F2G01 is **2176 bytes = 2048 main + 128 spare**:
 | Verify retries > 0, mismatches | Lower SPI clock (menu `4` → 1 MHz), shorten wires, add a 100 nF cap, take multiple dumps and run `binary_compare_fix.py` |
 | Quad self-test failed | Nothing to fix — it already fell back to single x1; the dump is valid. Check all four data lines if you want quad speed |
 | Dump shorter than expected | Check the serial monitor for errors; verify power and wiring; retry at a lower clock |
+| Odd blocks repeat the previous block's last page (MT29F2G01) | Dump taken before the plane-select fix; confirm with `tools/check_planes.py` and re-dump |
 | `Detected: UNKNOWN` | Enter geometry via menu `8`/`9`/`0`, or add the chip to `chips.yml` |
 | WiFi won't connect | Re-check SSID/password (menu `1`/`2`) and that the board is in range |
 | `dump.py` can't connect | Confirm `--ip` (or saved `dump.config.json`) matches the serial monitor and both are on the same network |
