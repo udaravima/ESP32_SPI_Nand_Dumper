@@ -15,7 +15,32 @@ follow [Semantic Versioning](https://semver.org/).
   verify could not catch it. `chips.yml` gains an optional `planes` field
   (MT29F2G01 = 2), and the driver now sets the plane bit on every cache read.
 
+### Changed
+- **Breaking: the firmware now builds from the v4 chip database (vendor-profile
+  stage 2).** `chips.yml`, `tools/gen_chips.py` and `nand_chips.*` are gone. The
+  build flattens every `resident: true` chip in `db/` into the C
+  `active_profile_t` table (`tools/gen_profiles.py`), and the read path runs
+  against one active profile: opcodes, feature addresses, the ECC-enable bit,
+  the ECC status decode, the quad-enable bit and the bad-block marker all come
+  from it. `tools/chips_yml_to_db.py` converts a custom v3 `chips.yml`.
+- ID detection reads three bytes and resolves them in the resident table,
+  using `dev2` when chips share an ID and refusing to guess otherwise.
+
+### Fixed
+- **DS35: ECC status decoded with Micron's field.** The Dosilicon profile
+  decodes the 2-bit `SR[5:4]` field, so a status such as `0x50` is "corrected",
+  not Micron's "7-8 bits corrected, refresh".
+- **DS35: quad-enable bit never set.** Quad mode now sets `B0h` bit 0 from the
+  profile before the self-test.
+- Factory bad-block markers are counted during raw dumps, using the profile's
+  marker offset, width and page (the DS35's marker is 2 bytes).
+
 ### Added
+- **On-device quad → single fallback.** With verify on, a page whose quad reads
+  never agree is re-read single from the same cache load. After three such
+  pages the rest of the dump runs single; the next dump tries quad again.
+- Native golden-blob test: the C side unpacks the `PRF` blobs `chipdb.py`
+  packs and checks every field, and the resident table equals the pushed bytes.
 - Simulated multi-plane NAND for native tests (`test/test_sim`). The read-path
   command sequencing moved into the hardware-free `nand_seq` module so the same
   code runs on the device and against the simulator.

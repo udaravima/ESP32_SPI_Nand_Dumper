@@ -1,6 +1,6 @@
 # ESP32 SPI NAND Dumper
 
-A chip-agnostic ESP32 tool for extracting firmware from SPI NAND flash over WiFi. It **auto-detects the chip** by its JEDEC ID, loads geometry from a community-editable registry (`chips.yml`), and streams a raw dump over TCP. Builds for **ESP32-classic and ESP32-S3** from one source tree.
+A chip-agnostic ESP32 tool for extracting firmware from SPI NAND flash over WiFi. It **auto-detects the chip** by its JEDEC ID, loads its geometry and vendor profile from a community-editable chip database (`db/`), and streams a raw dump over TCP. Builds for **ESP32-classic and ESP32-S3** from one source tree.
 
 Verified on the **Micron MT29F2G01** (2 Gbit, JEDEC `0x2C 0x24`). Adding another chip is a few lines of YAML — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -14,7 +14,7 @@ Verified on the **Micron MT29F2G01** (2 Gbit, JEDEC `0x2C 0x24`). Adding another
 ## Features
 
 - **Auto-detect by JEDEC ID** — reads `9Fh`, looks up geometry + capabilities in the compiled chip table. Unknown chips fall back to a manual-entry menu.
-- **Community chip registry** — `chips.yml` is the single human-editable source; a build-time hook generates the C table (`src/nand_chips_generated.h`).
+- **Community chip database** — `db/` (family → vendor profile → chip) is the single human-editable source; a build-time hook flattens it into the C profile table (`src/nand_profiles_generated.h`). ECC decoding, quad-enable and the bad-block marker are per-vendor data, not code.
 - **ECC selectable per dump, default OFF/raw** — raw preserves the literal stored bits + parity (reversible: you can compute the corrected image later, but never recover raw parity from a corrected dump). Toggle to ON for an immediately-mountable image.
 - **Quad (x4) with a self-test + automatic fallback** — a quad read is compared against a single read at boot; on mismatch it logs and falls back to single x1, so an unsupported quad setup never silently corrupts a dump.
 - **Geometry handshake** — the firmware sends a 32-byte header before the stream; `dump.py` and `ecc_stripper.py` self-configure from it, so page-size mismatches can't happen.
@@ -49,7 +49,7 @@ pio run -e esp32dev -t upload                 # ESP32-classic
 pio run -e esp32-s3-devkitc-1 -t upload       # ESP32-S3
 ```
 
-The build regenerates `src/nand_chips_generated.h` from `chips.yml` automatically.
+The build regenerates `src/nand_profiles_generated.h` from `db/` automatically.
 
 ### 2. Configure via the serial menu
 
@@ -101,7 +101,7 @@ Majority-votes across dumps to correct transmission errors, with a detailed repo
 
 ## Adding a Chip
 
-Edit [chips.yml](chips.yml) (JEDEC ID from the serial log's `mfr_id`/`dev_id`), run `pio run`, and open a PR. See [CONTRIBUTING.md](CONTRIBUTING.md). Entries are validated at build time — a malformed one fails the build with a message naming the field.
+Add `db/chips/<part>.yml` (JEDEC ID from the serial log), check it with `python3 tools/chipdb.py`, run `pio run`, and open a PR. See [CONTRIBUTING.md](CONTRIBUTING.md). Entries are validated at build time — a malformed one fails the build with a message naming the chip and field.
 
 ## NAND Details (MT29F2G01)
 
@@ -136,7 +136,7 @@ Edit [chips.yml](chips.yml) (JEDEC ID from the serial log's `mfr_id`/`dev_id`), 
 | `B0h` | **Configuration** | **ECC_EN (bit 4)**, CFG0–2, LOT_EN. **No QE bit** — Micron quad reads need no enable. |
 | `C0h` | Status | OIP, WEL, E_Fail, P_Fail, **ECCS0–2 (3-bit ECC status, bits 4–6)** |
 
-> These are Micron/Configuration-register semantics. Winbond/GigaDevice parts *do* have a QE bit — declare it per-chip in `chips.yml` (`has_qe_bit`, `qe_feature_addr`, `qe_bit`) and the quad path enables it automatically.
+> These are Micron/Configuration-register semantics. Winbond/GigaDevice parts *do* have a QE bit — declare it in the vendor profile in `db/profiles/` (`qe: {has: true, feature_addr: 0xB0, bit: 0x01}`) and the quad path enables it automatically. The Dosilicon DS35 profile does this. With verify on, a page whose quad reads disagree is re-read single, and after three such pages the rest of the dump runs single.
 
 ### ECC: raw vs corrected
 
@@ -149,7 +149,7 @@ ECC powers up **enabled**. This tool defaults it **OFF** for dumping:
 
 - **Read mismatches / retries > 0** — lower the SPI clock (1 MHz for noisy setups), shorten wires, add a 100 nF cap across VCC/GND, or take multiple dumps and run `binary_compare_fix.py`.
 - **Quad self-test failed** — the tool already fell back to single x1; the dump is fine. Check all four data lines if you want quad speed.
-- **Unknown chip** — the menu lets you enter geometry manually; better, add it to `chips.yml`.
+- **Unknown chip** — the menu lets you enter geometry manually; better, add it to `db/chips/`.
 - **WiFi fails** — check SSID/password in the menu and range.
 
 ## Development / Tests
