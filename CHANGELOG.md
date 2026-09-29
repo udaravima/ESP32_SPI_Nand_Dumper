@@ -16,6 +16,8 @@ follow [Semantic Versioning](https://semver.org/).
   (MT29F2G01 = 2), and the driver now sets the plane bit on every cache read.
 
 ### Added
+- GitHub Actions CI: pytest, native Unity tests, firmware builds for both
+  targets, and a generated-chip-table drift check on every PR.
 - `tools/check_planes.py` finds that signature in existing dumps so affected
   ones can be re-taken.
 

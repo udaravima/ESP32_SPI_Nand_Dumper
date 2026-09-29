@@ -53,3 +53,7 @@ pip install -r requirements-dev.txt
 python3 -m pytest        # host tools + wire-format cross-check
 pio test -e native       # pure C logic
 ```
+
+GitHub Actions (`.github/workflows/ci.yml`) runs the same checks on every pull
+request, plus firmware builds for `esp32dev` and `esp32-s3-devkitc-1` and a check
+that `src/nand_chips_generated.h` matches `chips.yml`.
