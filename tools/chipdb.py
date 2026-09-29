@@ -5,7 +5,8 @@ docs/superpowers/specs/2026-08-23-vendor-profile-architecture-design.md).
 The host owns the layered DB (db/families, db/profiles, db/chips); the device
 only ever sees one flat `active_profile_t`, produced here and nowhere else.
 
-Stage 1 of the rollout: host only. The firmware still builds from chips.yml.
+The firmware's resident table is generated from here (tools/gen_profiles.py),
+so resident and pushed profiles are the same bytes.
 
     python3 tools/chipdb.py                        # validate + list
     python3 tools/chipdb.py --show MT29F2G01ABAGD  # flattened profile
@@ -53,10 +54,10 @@ BBM_PAGES = {"first": 0x1, "second": 0x2, "last": 0x4}
 PLANES = (1, 2, 4)
 
 # ---- Flat struct layout (little-endian, naturally aligned) -------------------
-# Field order == the C active_profile_t that stage 2 adds to the firmware. Every
-# field sits at an offset that is a multiple of its size, so the C compiler
-# lays it out identically without packing attributes; the test suite checks
-# this, and stage 2 adds a static_assert on sizeof().
+# Field order == active_profile_t in src/nand_profile.h. Every field sits at an
+# offset that is a multiple of its size, so the C compiler lays it out
+# identically without packing attributes; the test suite checks this, the C
+# header static_asserts it, and the native golden-blob test proves it.
 LAYOUT = [
     ("name", "24s"),
     ("id_mfr", "B"), ("id_dev", "B"), ("id_dev2", "B"), ("id_flags", "B"),

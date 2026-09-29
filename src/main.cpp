@@ -1,12 +1,11 @@
 #include <Arduino.h>
 #include "nand_driver.h"
-#include "nand_chips.h"
+#include "nand_profile.h"
 #include "nand_addr.h"
 #include "dump_header.h"
 #include "wifi_transport.h"
 #include "config_store.h"
 #include "sys_info.h"
-#include "nand_ecc.h"
 
 #define MAX_PAGE_SIZE 8192  // upper bound for buffer/transfer sizing
 
@@ -28,11 +27,13 @@ static int      cfg_pages_per_block = 64;
 static int      cfg_total_blocks    = 2048;
 static int      cfg_page_addr_bits  = 6;
 static int      cfg_planes          = 1;   // 2 on multi-plane parts (MT29F2G01)
-static uint8_t  cfg_bad_mark        = 0x00;
 static bool     cfg_ecc_on          = false;   // global policy: OFF/raw
-// Detected chip
-static uint16_t g_chip_id = 0;
-static const nand_chip_t *g_chip = NULL;
+// Detected chip. g_active is the one flat profile the read path runs against:
+// a copy of the resident entry for a known chip, or a manual profile built
+// from the menu geometry for an unknown one.
+static uint8_t  g_id[3] = {0, 0, 0};           // mfr, dev, dev2 as read from 9Fh
+static bool     g_known = false;
+static active_profile_t g_active;
 // ===================================================
 
 void cmd_dump(bool verify);
@@ -95,10 +96,10 @@ void show_menu() {
   Serial.println("========================================");
   Serial.println("  ESP32 SPI NAND Dumper v3.1.1 — Config");
   Serial.println("========================================");
-  if (g_chip) Serial.printf("  Detected: %s (0x%02X 0x%02X)\n",
-                            g_chip->name, g_chip_id >> 8, g_chip_id & 0xFF);
-  else        Serial.printf("  Detected: UNKNOWN (0x%02X 0x%02X) — manual geometry\n",
-                            g_chip_id >> 8, g_chip_id & 0xFF);
+  if (g_known) Serial.printf("  Detected: %s (0x%02X 0x%02X)\n",
+                             g_active.name, g_id[0], g_id[1]);
+  else         Serial.printf("  Detected: UNKNOWN (0x%02X 0x%02X) — manual geometry\n",
+                             g_id[0], g_id[1]);
   Serial.println("  -- Network --");
   Serial.printf( "  [1] WiFi SSID:       %s\n", cfg_ssid);
   Serial.printf( "  [2] WiFi Password:   %s\n", mask_password(cfg_pass).c_str());
@@ -248,6 +249,12 @@ void apply_runtime_settings() {
   else
     Serial.printf("[!] SPI clock change failed (%d) — staying at init speed\n", clk_ret);
 
+  // An unknown chip runs on a manual profile that follows the menu geometry.
+  if (!g_known)
+    nand_profile_manual(&g_active, cfg_page_size, cfg_spare_size, cfg_pages_per_block,
+                        cfg_total_blocks, cfg_planes);
+  nand_apply_profile(&g_active);
+
   nand_set_read_mode(cfg_read_mode);
   nand_set_ecc(cfg_ecc_on);
   // Before any page read: multi-plane dies need the plane bit on every cache
@@ -256,9 +263,8 @@ void apply_runtime_settings() {
 
   // Quad self-test: verify a quad read matches a single read, else fall back.
   if (cfg_read_mode == NAND_READ_QUAD) {
-    if (g_chip && g_chip->has_qe_bit)
-      nand_set_feature(g_chip->qe_feature_addr,
-                       nand_get_feature(g_chip->qe_feature_addr) | g_chip->qe_bit);
+    if (g_active.qe_addr)   // quad-enable bit from the profile (DS35: B0h bit 0)
+      nand_set_feature(g_active.qe_addr, nand_get_feature(g_active.qe_addr) | g_active.qe_bit);
     uint32_t probe = nand_row_addr(1, 0, cfg_page_addr_bits);
     if (!nand_quad_selftest(probe, cfg_page_size)) {
       Serial.println("[!] Quad self-test FAILED — falling back to single x1");
@@ -349,22 +355,33 @@ void setup() {
     Serial.println("[!] NAND init failed"); return;
   }
 
-  g_chip_id = nand_read_id();
-  g_chip = nand_chip_lookup(g_chip_id >> 8, g_chip_id & 0xFF);
-  if (g_chip) {
-    Serial.printf("[*] Detected %s (0x%02X 0x%02X)\n",
-                  g_chip->name, g_chip_id >> 8, g_chip_id & 0xFF);
-    cfg_page_size       = g_chip->page_size;
-    cfg_spare_size      = g_chip->spare_size;
-    cfg_pages_per_block = g_chip->pages_per_block;
-    cfg_total_blocks    = g_chip->total_blocks;
-    cfg_page_addr_bits  = g_chip->page_addr_bits;
-    cfg_planes          = g_chip->planes;
-    cfg_bad_mark        = g_chip->bad_block_mark;
-    cfg_ecc_on          = g_chip->ecc_default_on;
+  // Resolve the ID in the resident table compiled from db/ (design § 5).
+  nand_read_id(g_id);
+  unsigned n_resident;
+  const active_profile_t *table = nand_profile_resident(&n_resident);
+  nand_prf_err_t perr;
+  const active_profile_t *hit = nand_profile_find(table, n_resident, g_id[0], g_id[1],
+                                                  g_id[2], &perr);
+  // Re-assert the cheap sanity checks on the resident entry before trusting it.
+  if (hit && (perr = nand_profile_check(hit, MAX_PAGE_SIZE)) != NAND_PRF_OK) hit = NULL;
+  if (hit) {
+    g_active = *hit;
+    g_known = true;
+    Serial.printf("[*] Detected %s (0x%02X 0x%02X)\n", g_active.name, g_id[0], g_id[1]);
+    cfg_page_size       = g_active.page_size;
+    cfg_spare_size      = g_active.spare_size;
+    cfg_pages_per_block = g_active.pages_per_block;
+    cfg_total_blocks    = g_active.total_blocks;
+    cfg_page_addr_bits  = log2_int(g_active.pages_per_block);
+    cfg_planes          = g_active.planes;
+    cfg_read_mode       = (nand_read_mode_t)g_active.read_mode;
   } else {
-    Serial.printf("[!] Unknown chip 0x%02X 0x%02X — using manual defaults\n",
-                  g_chip_id >> 8, g_chip_id & 0xFF);
+    Serial.printf("[!] %s for chip 0x%02X 0x%02X 0x%02X — using manual geometry\n",
+                  nand_prf_err_name(perr), g_id[0], g_id[1], g_id[2]);
+    if (perr == NAND_PRF_E_AMBIGUOUS_ID)
+      for (unsigned i = 0; i < n_resident; i++)
+        if (table[i].id_mfr == g_id[0] && table[i].id_dev == g_id[1])
+          Serial.printf("    candidate: %s\n", table[i].name);
   }
 
   // ---- Load saved settings (over detected defaults), then configure ----
@@ -430,6 +447,10 @@ void cmd_dump(bool verify) {
   uint32_t total_pages = (uint32_t)cfg_total_blocks * cfg_pages_per_block;
   uint32_t total_bytes = total_pages * (uint32_t)cfg_page_size;
 
+  // Each dump is a new read session: quad gets another chance even if the last
+  // dump fell back to single.
+  nand_set_read_mode(cfg_read_mode);
+
   // Each SPI DMA read lands in a page-sized DMA-capable scratch buffer; completed
   // page-frames (data + 4-byte CRC seal) are copied into a larger batch buffer and
   // flushed to TCP in ONE write every `batch` pages. Batching cuts per-write
@@ -464,8 +485,8 @@ void cmd_dump(bool verify) {
   geo.total_blocks    = cfg_total_blocks;
   geo.total_pages     = total_pages;
   geo.total_bytes     = total_bytes;
-  geo.mfr_id          = g_chip_id >> 8;
-  geo.dev_id          = g_chip_id & 0xFF;
+  geo.mfr_id          = g_id[0];
+  geo.dev_id          = g_id[1];
   geo.page_addr_bits  = cfg_page_addr_bits;
   geo.flags = (cfg_ecc_on ? DUMP_FLAG_ECC_ON : 0)
             | (cfg_read_mode == NAND_READ_QUAD ? DUMP_FLAG_QUAD : 0)
@@ -483,34 +504,50 @@ void cmd_dump(bool verify) {
   unsigned long startTime = millis();
   uint32_t pagesDone = 0, retryCount = 0, failedPages = 0;
   uint32_t eccUncorrectable = 0, eccRefresh = 0;   // meaningful only when ECC is on
+  uint32_t singleRescued = 0, badBlocks = 0;
+  bool blockMarkedBad = false;
   int fill = 0;   // page-frames currently held in batch_buf
 
   bool aborted = false;
   for (int block = 0; block < cfg_total_blocks && !aborted; block++) {
+    blockMarkedBad = false;
     for (int page = 0; page < cfg_pages_per_block; page++) {
       uint32_t row = nand_row_addr(block, page, cfg_page_addr_bits);
 
       if (verify) {
-        if (!nand_read_page_verified(row, scratch, cfg_page_size, cfg_max_retries, &retryCount))
-          failedPages++;
+        nand_page_result_t r = nand_read_page_verified(row, scratch, cfg_page_size,
+                                                       cfg_max_retries, &retryCount);
+        if (r == NAND_PAGE_UNSTABLE) failedPages++;
+        else if (r == NAND_PAGE_OK_SINGLE) singleRescued++;
       } else {
         nand_page_read_to_cache(row);
         nand_wait_ready();
         nand_read_cache(scratch, cfg_page_size);
       }
 
-      // With ECC on, the chip corrects up to 8 bits/sector and reports the
-      // outcome in ECCS. A CRC over corrected-or-not data can't reveal an
+      // Factory bad-block marker: where, how wide and which polarity come from
+      // the profile's bbm fields. Only meaningful on a raw (ECC off) read.
+      if (!cfg_ecc_on && !blockMarkedBad &&
+          nand_profile_is_bbm_page(&g_active, page, cfg_pages_per_block) &&
+          nand_profile_marker_bad(&g_active, scratch, cfg_page_size, cfg_spare_size)) {
+        blockMarkedBad = true;
+        badBlocks++;
+        if (badBlocks <= 20) Serial.printf("[BBM] block %d is marked bad\n", block);
+      }
+
+      // With ECC on, the chip corrects what it can and reports the outcome in
+      // its status register. A CRC over corrected-or-not data can't reveal an
       // uncorrectable page, so surface it here — otherwise a damaged page passes
-      // silently. (ECCS is only valid when ECC is enabled.)
+      // silently. The field and its meaning are vendor-specific, so the decode
+      // is the profile's ecc_map. (The status is only valid with ECC enabled.)
       if (cfg_ecc_on) {
-        uint8_t eccs = nand_get_ecc_status();
-        if (nand_ecc_uncorrectable(eccs)) {
+        nand_ecc_sev_t sev = nand_profile_ecc_severity(&g_active, nand_get_status());
+        if (sev == NAND_ECC_UNCORRECTABLE) {
           eccUncorrectable++;
           if (eccUncorrectable <= 20)
             Serial.printf("[ECC] UNCORRECTABLE page %u (block %d, page %d)\n",
                           pagesDone, block, page);
-        } else if (nand_ecc_refresh_recommended(eccs)) {
+        } else if (sev == NAND_ECC_CORRECTED_REFRESH) {
           eccRefresh++;
         }
       }
@@ -574,6 +611,12 @@ void cmd_dump(bool verify) {
   Serial.printf("[+] %.1f MB in %lu sec (%.2f MB/s)\n",
                 totalMB, elapsed, elapsed > 0 ? totalMB / elapsed : 0);
   Serial.printf("[+] Retries: %u | Failed pages: %u\n", retryCount, failedPages);
+  if (singleRescued)
+    Serial.printf("[+] Quad fallback: %u page(s) re-read single%s\n", singleRescued,
+                  nand_get_read_mode() == NAND_READ_SINGLE && cfg_read_mode == NAND_READ_QUAD
+                      ? "; the rest of the dump ran single" : "");
+  if (!cfg_ecc_on)
+    Serial.printf("[+] Bad-block markers (%s): %u block(s)\n", g_active.name, badBlocks);
   if (cfg_ecc_on) {
     Serial.printf("[+] ECC: %u uncorrectable, %u refresh-recommended pages\n",
                   eccUncorrectable, eccRefresh);

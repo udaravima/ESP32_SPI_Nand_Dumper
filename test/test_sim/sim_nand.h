@@ -8,6 +8,10 @@
 //   by the column's plane-select bit, starting at the column offset.
 // Array contents are a deterministic function of (row, byte), so a test can
 // tell exactly which page's data came back.
+//
+// Fault injection for the quad -> single fallback: a noisy line mode corrupts
+// one bit per cache read at a position that moves every read, the way a
+// marginal D2/D3 wire does, so two reads never agree.
 #pragma once
 #include <stdint.h>
 #include <stdbool.h>
@@ -21,6 +25,12 @@ typedef struct {
   int planes, page_size, pages_per_block, page_addr_bits, plane_bit;
   uint8_t cache[SIM_MAX_PLANES][SIM_MAX_PAGE];
   int page_reads, cache_reads;
+  uint32_t last_row;
+  bool quad_noisy, single_noisy;   // every cache read in that mode is corrupted
+  int32_t noisy_row;               // >= 0: only this row's quad reads are noisy
+  uint32_t noise_tick;
+  int quad_reads, single_reads;
+  uint8_t id[3];
 } sim_nand_t;
 
 static inline uint8_t sim_byte(uint32_t row, int i) {
@@ -38,6 +48,8 @@ static inline void sim_init(sim_nand_t *n, int planes, int page_size,
   n->pages_per_block = pages_per_block; n->page_addr_bits = page_addr_bits;
   n->plane_bit = plane_bit;
   memset(n->cache, 0xFF, sizeof(n->cache));   // power-on cache contents
+  n->noisy_row = -1;
+  n->id[0] = 0x2C; n->id[1] = 0x24; n->id[2] = 0x2C;
 }
 
 static void sim_xfer(void *ctx, uint8_t cmd, uint32_t addr, uint8_t addr_bits,
@@ -48,6 +60,7 @@ static void sim_xfer(void *ctx, uint8_t cmd, uint32_t addr, uint8_t addr_bits,
     uint32_t row = addr;
     int plane = (int)((row >> n->page_addr_bits) & (uint32_t)(n->planes - 1));
     sim_page(row, n->cache[plane], n->page_size);
+    n->last_row = row;
     n->page_reads++;
   } else if (cmd == NAND_OP_READ_CACHE || cmd == NAND_OP_READ_CACHE4) {
     uint32_t col = addr >> 8;                    // drop the dummy byte
@@ -56,10 +69,19 @@ static void sim_xfer(void *ctx, uint8_t cmd, uint32_t addr, uint8_t addr_bits,
     for (int i = 0; i < rx_len; i++)
       rx[i] = (off + i < (uint32_t)n->page_size) ? n->cache[plane][off + i] : 0xFF;
     n->cache_reads++;
+    if (quad) n->quad_reads++; else n->single_reads++;
+    bool noisy = quad ? (n->quad_noisy || (int32_t)n->last_row == n->noisy_row)
+                      : n->single_noisy;
+    if (noisy && rx_len > 0) {
+      n->noise_tick++;
+      rx[n->noise_tick % (uint32_t)rx_len] ^= (uint8_t)(1u << (n->noise_tick % 8));
+    }
+  } else if (cmd == NAND_OP_READ_ID) {
+    for (int i = 0; i < rx_len; i++) rx[i] = i < 3 ? n->id[i] : 0x00;
   }
 }
 
 static inline nand_bus_t sim_bus(sim_nand_t *n) {
-  nand_bus_t b = { sim_xfer, n };
+  nand_bus_t b = { sim_xfer, n, NULL };
   return b;
 }

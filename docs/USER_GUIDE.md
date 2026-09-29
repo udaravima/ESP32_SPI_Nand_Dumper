@@ -87,7 +87,7 @@ pio run -e esp32dev -t upload             # ESP32-classic
 pio run -e esp32-s3-devkitc-1 -t upload   # ESP32-S3
 ```
 
-Each build regenerates the compiled chip table from `chips.yml` automatically, so
+Each build regenerates the compiled chip table from the chip database (`db/`), so
 if you add a chip you just rebuild.
 
 ## The config menu
@@ -134,7 +134,7 @@ the board's free memory can hold. Try a few and watch the MB/s to find your best
 | `S` | Start the dump with the shown settings |
 
 If the chip isn't in the registry, the menu says `Detected: UNKNOWN` and you set
-geometry manually with `8`/`9`/`0`. Better: add it to `chips.yml` (see the
+geometry manually with `8`/`9`/`0`. Better: add it to `db/chips/` (see the
 [Developer Guide](DEVELOPER_GUIDE.md#adding-a-chip)).
 
 ## ECC: raw vs corrected
@@ -288,6 +288,6 @@ Each raw page for the MT29F2G01 is **2176 bytes = 2048 main + 128 spare**:
 | Quad self-test failed | Nothing to fix — it already fell back to single x1; the dump is valid. Check all four data lines if you want quad speed |
 | Dump shorter than expected | Check the serial monitor for errors; verify power and wiring; retry at a lower clock |
 | Odd blocks repeat the previous block's last page (MT29F2G01) | Dump taken before the plane-select fix; confirm with `tools/check_planes.py` and re-dump |
-| `Detected: UNKNOWN` | Enter geometry via menu `8`/`9`/`0`, or add the chip to `chips.yml` |
+| `Detected: UNKNOWN` | Enter geometry via menu `8`/`9`/`0`, or add the chip to `db/chips/` |
 | WiFi won't connect | Re-check SSID/password (menu `1`/`2`) and that the board is in range |
 | `dump.py` can't connect | Confirm `--ip` (or saved `dump.config.json`) matches the serial monitor and both are on the same network |

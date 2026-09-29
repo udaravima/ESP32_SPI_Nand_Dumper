@@ -16,12 +16,14 @@ jobs:
           python-version: "3.11"
       - run: pip install -r requirements-dev.txt
       - run: python -m pytest -q
-      # The generated chip table is committed; fail if chips.yml changed
-      # without regenerating it.
-      - name: Generated chip table is up to date
+      # The resident profile table and the golden blobs are committed; fail if
+      # db/ changed without regenerating them.
+      - name: Generated profile table is up to date
         run: |
-          python tools/gen_chips.py chips.yml src/nand_chips_generated.h
-          git diff --exit-code src/nand_chips_generated.h
+          python tools/chipdb.py
+          python tools/gen_profiles.py
+          python tools/gen_profiles.py --golden
+          git diff --exit-code src/nand_profiles_generated.h test/test_profile/golden_blobs.h
 
   native:
     name: Native tests (pio test -e native)

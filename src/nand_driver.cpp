@@ -6,8 +6,11 @@
 
 static spi_device_handle_t s_spi;
 static spi_device_interface_config_t s_devcfg;  // kept so nand_set_clock can re-add the device
-static nand_read_mode_t s_read_mode = NAND_READ_SINGLE;
 static uint8_t *s_verify_buf = NULL;
+
+// Feature-register access, from the active profile (family defaults until then).
+static uint8_t s_op_get_feat = 0x0F, s_op_set_feat = 0x1F;
+static uint8_t s_status_addr = 0xC0, s_cfg_addr = 0xB0, s_ecc_en_mask = 0x10;
 
 // SPI transport for the pure read-path sequencer (nand_seq). The sequencer
 // decides opcode/address/plane; this only puts it on the wire.
@@ -22,10 +25,13 @@ static void spi_bus_xfer(void *, uint8_t cmd, uint32_t addr, uint8_t addr_bits,
   t.base.rx_buffer = rx;
   spi_device_polling_transmit(s_spi, (spi_transaction_t *)&t);
 }
-static nand_seq_t s_seq = { { spi_bus_xfer, NULL }, 1, 6, 12, 0 };
+static void spi_bus_wait(void *) { nand_wait_ready(); }
+static nand_seq_t s_seq;
 
 esp_err_t nand_init(const nand_config_t *config, int max_page_size) {
-  s_read_mode = config->read_mode;
+  nand_bus_t bus = { spi_bus_xfer, NULL, spi_bus_wait };
+  nand_seq_init(&s_seq, bus);
+  nand_seq_set_quad(&s_seq, config->read_mode == NAND_READ_QUAD);
 
   spi_bus_config_t buscfg = {};
   buscfg.mosi_io_num = config->pin_d0;
@@ -71,6 +77,15 @@ esp_err_t nand_set_clock(int clock_hz) {
   return spi_bus_add_device(NAND_SPI_HOST, &s_devcfg, &s_spi);
 }
 
+void nand_apply_profile(const active_profile_t *p) {
+  s_op_get_feat = p->op_get_feat;
+  s_op_set_feat = p->op_set_feat;
+  s_status_addr = p->op_status_addr;
+  s_cfg_addr    = p->op_cfg_addr;
+  s_ecc_en_mask = (uint8_t)(1u << p->ecc_en_bit);
+  nand_seq_set_opcodes(&s_seq, p->op_page_read, p->op_read_cache, p->op_read_cache_x4);
+}
+
 void nand_reset(void) {
   spi_transaction_t t = {};
   t.cmd = 0xFF;
@@ -80,7 +95,7 @@ void nand_reset(void) {
 uint8_t nand_get_feature(uint8_t addr) {
   spi_transaction_ext_t t = {};
   t.base.flags = SPI_TRANS_VARIABLE_ADDR | SPI_TRANS_USE_RXDATA;
-  t.base.cmd = 0x0F;
+  t.base.cmd = s_op_get_feat;
   t.base.addr = addr;
   t.address_bits = 8;
   t.base.rxlength = 8;
@@ -91,7 +106,7 @@ uint8_t nand_get_feature(uint8_t addr) {
 void nand_set_feature(uint8_t addr, uint8_t value) {
   spi_transaction_ext_t t = {};
   t.base.flags = SPI_TRANS_VARIABLE_ADDR | SPI_TRANS_USE_TXDATA;
-  t.base.cmd = 0x1F;
+  t.base.cmd = s_op_set_feat;
   t.base.addr = addr;
   t.address_bits = 8;
   t.base.length = 8;
@@ -99,18 +114,18 @@ void nand_set_feature(uint8_t addr, uint8_t value) {
   spi_device_polling_transmit(s_spi, (spi_transaction_t *)&t);
 }
 
-// Toggle on-die ECC (Configuration register B0h, bit4 ECC_EN).
+// Toggle on-die ECC (configuration register, ECC-enable bit from the profile).
 void nand_set_ecc(bool on) {
-  uint8_t cfg = nand_get_feature(NAND_FEATURE_CONFIG);
-  if (on) cfg |= NAND_CONFIG_ECC_EN;
-  else    cfg &= ~NAND_CONFIG_ECC_EN;
-  nand_set_feature(NAND_FEATURE_CONFIG, cfg);
+  uint8_t cfg = nand_get_feature(s_cfg_addr);
+  if (on) cfg |= s_ecc_en_mask;
+  else    cfg &= ~s_ecc_en_mask;
+  nand_set_feature(s_cfg_addr, cfg);
 }
 
 void nand_wait_ready(void) {
   uint8_t status;
   do {
-    status = nand_get_feature(NAND_FEATURE_STATUS);
+    status = nand_get_feature(s_status_addr);
   } while (status & NAND_STATUS_OIP);
 }
 
@@ -132,26 +147,25 @@ void nand_read_cache_quad(uint8_t *buf, int len) {
 }
 
 void nand_read_cache(uint8_t *buf, int len) {
-  if (s_read_mode == NAND_READ_QUAD) nand_read_cache_quad(buf, len);
-  else nand_read_cache_single(buf, len);
+  nand_seq_read_cache(&s_seq, buf, len, s_seq.quad);
 }
 
-bool nand_read_page_verified(uint32_t row_addr, uint8_t *buf, int page_size,
-                             int max_retries, uint32_t *retry_count) {
-  nand_page_read_to_cache(row_addr);
-  nand_wait_ready();
-  nand_read_cache(buf, page_size);
-
-  // A matching first pair passes regardless of max_retries (fixes retries==0).
-  for (int attempt = 0; attempt <= max_retries; attempt++) {
-    nand_read_cache(s_verify_buf, page_size);  // cache still loaded, no re-PAGE-READ
-    if (memcmp(buf, s_verify_buf, page_size) == 0) return true;
-    if (retry_count) (*retry_count)++;
-    Serial.printf("[!] SPI mismatch at row 0x%06X (retry %d)\n",
-                  (unsigned)row_addr, attempt + 1);
-    memcpy(buf, s_verify_buf, page_size);
-  }
-  return false;
+nand_page_result_t nand_read_page_verified(uint32_t row_addr, uint8_t *buf, int page_size,
+                                           int max_retries, uint32_t *retry_count) {
+  uint32_t before = retry_count ? *retry_count : 0;
+  bool was_quad = s_seq.quad;
+  nand_page_result_t r = nand_seq_read_verified(&s_seq, row_addr, buf, s_verify_buf,
+                                                page_size, max_retries, retry_count);
+  if (retry_count && *retry_count != before)
+    Serial.printf("[!] SPI mismatch at row 0x%06X (%u retries)\n",
+                  (unsigned)row_addr, (unsigned)(*retry_count - before));
+  if (r == NAND_PAGE_OK_SINGLE)
+    Serial.printf("[!] Quad read unstable at row 0x%06X; recovered with a single read\n",
+                  (unsigned)row_addr);
+  if (was_quad && !s_seq.quad)
+    Serial.printf("[!] %u pages needed the single fallback; reading the rest single x1\n",
+                  (unsigned)s_seq.quad_fallbacks);
+  return r;
 }
 
 // Read probe_row via single and via quad; return true if they match.
@@ -166,20 +180,20 @@ bool nand_quad_selftest(uint32_t probe_row, int page_size) {
   return memcmp(s_verify_buf, q, page_size) == 0;
 }
 
-nand_read_mode_t nand_get_read_mode(void) { return s_read_mode; }
-void nand_set_read_mode(nand_read_mode_t m) { s_read_mode = m; }
+uint32_t nand_quad_fallbacks(void) { return s_seq.quad_fallbacks; }
+nand_read_mode_t nand_get_read_mode(void) {
+  return s_seq.quad ? NAND_READ_QUAD : NAND_READ_SINGLE;
+}
+void nand_set_read_mode(nand_read_mode_t m) { nand_seq_set_quad(&s_seq, m == NAND_READ_QUAD); }
 
-uint16_t nand_read_id(void) {
-  spi_transaction_ext_t t = {};
-  t.base.flags = SPI_TRANS_VARIABLE_ADDR | SPI_TRANS_USE_RXDATA;
-  t.base.cmd = 0x9F;
-  t.base.addr = 0x00;  // 8-bit dummy
-  t.address_bits = 8;
-  t.base.rxlength = 16;
-  spi_device_polling_transmit(s_spi, (spi_transaction_t *)&t);
-  return (t.base.rx_data[0] << 8) | t.base.rx_data[1];
+// 9Fh + one zero address/dummy byte, then mfr, dev and one more byte (dev2).
+// Read into a DMA-capable buffer: rx_data (USE_RXDATA) holds only 4 bytes, and
+// the sequencer passes an rx pointer.
+void nand_read_id(uint8_t id[3]) {
+  nand_seq_read_id(&s_seq, s_verify_buf, 3);
+  memcpy(id, s_verify_buf, 3);
 }
 
-uint8_t nand_get_ecc_status(void) {
-  return (nand_get_feature(NAND_FEATURE_STATUS) >> 4) & 0x07;  // ECCS0..2
+uint8_t nand_get_status(void) {
+  return nand_get_feature(s_status_addr);
 }

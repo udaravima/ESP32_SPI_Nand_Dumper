@@ -1,13 +1,10 @@
 import copy
-import os
 
 import pytest
-import yaml
 
 from tools import chipdb as cdb
 from tools.chipdb import OK, CORR, CORR_REFRESH, UNCOR
 
-REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 @pytest.fixture(scope="module")
@@ -25,19 +22,6 @@ def test_shipped_db_validates_without_warnings(db):
     flats, warnings = cdb.validate_db(db)
     assert set(flats) == {"MT29F2G01ABAGD", "DS35Q1GA"}
     assert warnings == []
-
-
-def test_db_agrees_with_chips_yml_until_stage2(db):
-    # The firmware still builds from chips.yml; the two must not drift.
-    with open(os.path.join(REPO, "chips.yml")) as fh:
-        legacy = yaml.safe_load(fh)["chips"]
-    for name, old in legacy.items():
-        f = cdb.flatten(db, name)
-        assert (f["id_mfr"], f["id_dev"]) == (old["mfr_id"], old["dev_id"])
-        for k in ("page_size", "spare_size", "pages_per_block", "total_blocks"):
-            assert f[k] == old[k], (name, k)
-        assert f["planes"] == old.get("planes", 1)
-        assert f["vcc_mv"] == old["vcc_mv"]
 
 
 def test_dosilicon_fixes_the_three_ds35_defects(db):
