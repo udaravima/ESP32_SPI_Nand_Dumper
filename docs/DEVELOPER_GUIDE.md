@@ -36,6 +36,7 @@ be verified on real silicon.
 | [`sys_info.h`](../src/sys_info.h) / [`.cpp`](../src/sys_info.cpp) | `sys_recommend_batch_pages()` — memory-aware batch sizing | ✅ host-testable |
 | [`sys_info_esp.cpp`](../src/sys_info_esp.cpp) | `sys_info_report()` / `sys_free_dma_bytes()` — runtime chip/heap query | ❌ hardware |
 | [`board_pins.h`](../src/board_pins.h) | Per-target pins + `NAND_SPI_HOST` | — macros |
+| [`nand_seq.h`](../src/nand_seq.h) / [`.cpp`](../src/nand_seq.cpp) | Read-path sequencing (PAGE READ, READ FROM CACHE, plane-select column) over a bus callback | ✅ host-testable |
 | [`nand_driver.h`](../src/nand_driver.h) / [`.cpp`](../src/nand_driver.cpp) | SPI transactions: reset, feature regs, page read, cache read, ECC toggle, verify, quad self-test | ❌ hardware |
 | [`wifi_transport.h`](../src/wifi_transport.h) / [`.cpp`](../src/wifi_transport.cpp) | WiFi connect + TCP stream | ❌ hardware |
 | [`main.cpp`](../src/main.cpp) | Boot flow, config menu, dump loop, header emission | ❌ hardware |
@@ -179,6 +180,9 @@ What each layer covers:
   golden bytes, and `dump.py` header parsing / metadata.
 - **`pio test -e native`** — `nand_chip_lookup`, `nand_row_addr` (including the
   regression test that block 1024 does not alias to row 0), and header pack/CRC.
+  `test/test_sim` runs the real read-path sequencer (`nand_seq`) against a
+  simulated multi-plane NAND (`sim_nand.h`, one cache register per plane), so
+  plane-select and addressing mistakes fail a test instead of corrupting dumps.
 - **Bench (manual, real hardware)** — SPI transactions, ECC on/off on the array,
   the quad self-test on real wiring, WiFi, and a full end-to-end dump. These
   cannot be unit-tested; the bench checklist is Task 14 of the implementation

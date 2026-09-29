@@ -1,5 +1,6 @@
 #include "nand_driver.h"
 #include "nand_addr.h"
+#include "nand_seq.h"
 #include <string.h>
 #include <Arduino.h>  // For Serial debug
 
@@ -7,9 +8,21 @@ static spi_device_handle_t s_spi;
 static spi_device_interface_config_t s_devcfg;  // kept so nand_set_clock can re-add the device
 static nand_read_mode_t s_read_mode = NAND_READ_SINGLE;
 static uint8_t *s_verify_buf = NULL;
-// Plane selection for multi-plane dies (see nand_cache_column()).
-static uint8_t  s_planes = 1, s_page_addr_bits = 6, s_plane_bit = 12;
-static uint16_t s_cache_col = 0;   // column (incl. plane bit) of the last PAGE READ
+
+// SPI transport for the pure read-path sequencer (nand_seq). The sequencer
+// decides opcode/address/plane; this only puts it on the wire.
+static void spi_bus_xfer(void *, uint8_t cmd, uint32_t addr, uint8_t addr_bits,
+                         uint8_t *rx, int rx_len, bool quad) {
+  spi_transaction_ext_t t = {};
+  t.base.flags = SPI_TRANS_VARIABLE_ADDR | (quad ? SPI_TRANS_MODE_QIO : 0);
+  t.base.cmd = cmd;
+  t.base.addr = addr;
+  t.address_bits = addr_bits;
+  t.base.rxlength = rx_len * 8;
+  t.base.rx_buffer = rx;
+  spi_device_polling_transmit(s_spi, (spi_transaction_t *)&t);
+}
+static nand_seq_t s_seq = { { spi_bus_xfer, NULL }, 1, 6, 12, 0 };
 
 esp_err_t nand_init(const nand_config_t *config, int max_page_size) {
   s_read_mode = config->read_mode;
@@ -102,43 +115,20 @@ void nand_wait_ready(void) {
 }
 
 void nand_set_plane_config(uint8_t planes, uint8_t page_addr_bits, uint32_t main_size) {
-  s_planes = planes ? planes : 1;
-  s_page_addr_bits = page_addr_bits;
-  s_plane_bit = nand_plane_bit(main_size);
-  s_cache_col = 0;
+  nand_seq_set_planes(&s_seq, planes, page_addr_bits, main_size);
 }
 
 void nand_page_read_to_cache(uint32_t row_addr) {
-  s_cache_col = nand_cache_column(row_addr, s_page_addr_bits, s_planes, s_plane_bit);
-  spi_transaction_ext_t t = {};
-  t.base.flags = SPI_TRANS_VARIABLE_ADDR;
-  t.base.cmd = 0x13;
-  t.base.addr = row_addr & 0xFFFFFF;  // 24-bit row (17 used on 2Gbit)
-  t.address_bits = 24;
-  spi_device_polling_transmit(s_spi, (spi_transaction_t *)&t);
+  nand_seq_page_read(&s_seq, row_addr);
 }
 
 void nand_read_cache_single(uint8_t *buf, int len) {
-  spi_transaction_ext_t t = {};
-  t.base.flags = SPI_TRANS_VARIABLE_ADDR;
-  t.base.cmd = 0x0B;         // READ FROM CACHE (fast)
-  t.base.addr = (uint32_t)s_cache_col << 8;  // col addr(16, plane bit incl.) + dummy(8)
-  t.address_bits = 24;
-  t.base.rxlength = len * 8;
-  t.base.rx_buffer = buf;
-  spi_device_polling_transmit(s_spi, (spi_transaction_t *)&t);
+  nand_seq_read_cache(&s_seq, buf, len, false);
 }
 
+// QIO puts the DATA phase on 4 lines; address stays single (1-1-4) — matches 6Bh.
 void nand_read_cache_quad(uint8_t *buf, int len) {
-  spi_transaction_ext_t t = {};
-  // QIO puts the DATA phase on 4 lines; address stays single (1-1-4) — matches 6Bh.
-  t.base.flags = SPI_TRANS_VARIABLE_ADDR | SPI_TRANS_MODE_QIO;
-  t.base.cmd = 0x6B;         // READ FROM CACHE x4
-  t.base.addr = (uint32_t)s_cache_col << 8;  // col addr(16, plane bit incl.) + dummy(8)
-  t.address_bits = 24;
-  t.base.rxlength = len * 8;
-  t.base.rx_buffer = buf;
-  spi_device_polling_transmit(s_spi, (spi_transaction_t *)&t);
+  nand_seq_read_cache(&s_seq, buf, len, true);
 }
 
 void nand_read_cache(uint8_t *buf, int len) {
