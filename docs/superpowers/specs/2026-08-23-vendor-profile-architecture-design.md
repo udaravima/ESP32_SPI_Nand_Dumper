@@ -1,13 +1,21 @@
 # Vendor/Family Profile Architecture — Design
 
 - **Date:** 2026-08-23
-- **Status:** Approved design, pre-implementation
+- **Status:** Approved design; stage 1 (host DB + `tools/chipdb.py`) implemented
 - **Revision:** r2 — folded in peer review (2026-08-23). Schema changes made
   while `schema_ver` is still unshipped: `ecc_map[16]` (out-of-bounds fix on the
   decode line), `read_id` moved to the chip layer, OOB uniform-sections →
   bounded region lists, STATUS2 `0x30` Winbond / `0xF0` GigaDevice split,
   market-plausibility capacity check moved host-side, restored `datasheet`/
   `notes` provenance, `name`-length guard, `dev2` ID-read widening.
+- **Revision:** r3 — stage-1 implementation (2026-09-29). Flat-struct fields
+  added while `schema_ver` 1 is still unshipped: `id_mfr/id_dev/id_dev2/id_flags`
+  (the § 6 ID cross-check needs the expected ID *in* the blob), `planes` (the
+  2-plane MT29F2G01 needs the plane-select bit on every cache read, fixed in
+  PR #1), `op_read_cache_x4` (quad → single fallback needs both opcodes), and
+  `bbm_pages` (bitmask for `bbm.pages`). YAML `bbm` keys are `offset`/`length`,
+  because a bare `off` parses as a YAML 1.1 boolean. Authoritative layout: the
+  `LAYOUT` table in `tools/chipdb.py` (120 bytes, naturally aligned).
 - **Author:** Udara Vimarsha (with Claude)
 - **Scope of this document:** Cycle 1 of a multi-cycle effort. The *schema* is
   designed for a full read+write programmer; this cycle *implements* the

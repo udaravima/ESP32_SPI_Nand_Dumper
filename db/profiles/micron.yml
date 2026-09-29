@@ -1,0 +1,11 @@
+micron:
+  datasheet: "Micron M79A SPI NAND (docs/datasheets/m79a-2gb-1-8v-nand-spi.pdf); ECC status per MT29F2G01 Table 9"
+  ecc:
+    scheme: micron3             # SR[6:4]
+    strength: 8                 # bits / 512 B
+    status2_reg: null
+  qe: {has: false}              # Micron quad reads need no enable bit
+  oob_layout:                   # 128-byte spare; mainline Linux micron_8_ooblayout
+    free_regions: [[2, 62]]
+    ecc_regions:  [[64, 64]]
+    bbm: {offset: 0, length: 1, good: 0xFF, pages: [first]}

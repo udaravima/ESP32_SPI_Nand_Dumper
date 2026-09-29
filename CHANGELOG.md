@@ -19,6 +19,11 @@ follow [Semantic Versioning](https://semver.org/).
 - Simulated multi-plane NAND for native tests (`test/test_sim`). The read-path
   command sequencing moved into the hardware-free `nand_seq` module so the same
   code runs on the device and against the simulator.
+- **v4 chip database, stage 1 (host only).** `db/` holds the family → profile →
+  chip model, and `tools/chipdb.py` validates it, resolves each chip to the flat
+  device profile, expands ECC schemes to a 16-entry map, disambiguates shared
+  JEDEC IDs without guessing, and packs the fail-closed `PRF` push blob. The
+  firmware still builds from `chips.yml`, and a test keeps the two in agreement.
 - GitHub Actions CI: pytest, native Unity tests, firmware builds for both
   targets, and a generated-chip-table drift check on every PR.
 - `tools/check_planes.py` finds that signature in existing dumps so affected

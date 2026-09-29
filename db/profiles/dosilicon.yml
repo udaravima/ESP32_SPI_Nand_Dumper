@@ -1,0 +1,11 @@
+dosilicon:
+  datasheet: "DS35x1GAxxx (Dosilicon); matches the mainline Linux spinand dosilicon driver"
+  ecc:
+    scheme: generic2            # SR[5:4]
+    strength: 4
+    status2_reg: null
+  qe: {has: true, feature_addr: 0xB0, bit: 0x01}
+  oob_layout:                   # 4 x 16 sections, BBM in section 0
+    free_regions: [[2, 6], [16, 8], [32, 8], [48, 8]]
+    ecc_regions:  [[8, 8], [24, 8], [40, 8], [56, 8]]
+    bbm: {offset: 0, length: 2, good: 0xFF, pages: [first]}
