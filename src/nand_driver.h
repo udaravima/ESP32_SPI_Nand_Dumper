@@ -23,6 +23,10 @@ typedef struct {
 
 esp_err_t nand_init(const nand_config_t *config, int max_page_size);
 esp_err_t nand_set_clock(int clock_hz);       // re-clock the device post-detection
+// Free the SPI bus so its pins can carry another bus (an I2C EEPROM in the
+// same SOIC-8 clip), and bring it back exactly as nand_init set it up.
+esp_err_t nand_bus_release(void);
+esp_err_t nand_bus_restore(void);
 // Take opcodes, feature addresses and the ECC-enable bit from the active
 // profile. Until called, the spi-nand family defaults are used (for READ ID).
 void      nand_apply_profile(const active_profile_t *p);

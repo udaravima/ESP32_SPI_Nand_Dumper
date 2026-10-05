@@ -1,0 +1,16 @@
+# SPI serial EEPROM and FRAM (25-series: 25xx010 .. 25xxM04, M95xxx, AT25xxx,
+# MB85RS/FM25 FRAM). Same SOIC-8 pinout and SPI mode 0 as SPI NOR, but no
+# common READ ID, no 4 KiB sectors and a 1-, 2- or 3-byte address.
+#
+# Reads are 03h + address. On 512-byte parts with a 1-byte address (25xx040)
+# address bit A8 travels in bit 3 of the opcode (0Bh), as the Linux at25
+# driver's "address-width = 9" does. Writes need WREN (06h) first and commit
+# on CS rising; this read-only firmware never sends WREN, WRITE or WRSR.
+spi-eeprom:
+  opcodes:
+    read: 0x03
+    read_sr: 0x05
+    write_sr: 0x01
+    write_enable: 0x06
+    write: 0x02
+  read_unit: 256                # bytes per dump frame

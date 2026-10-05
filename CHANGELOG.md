@@ -7,6 +7,15 @@ follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Serial EEPROMs.** The dumper reads I2C 24xx EEPROMs (24C01 .. 24CM02) and
+  SPI 25xx EEPROMs and FRAMs, 29 parts seeded from the Linux at24/at25 data
+  and vendor datasheets, all compiled in. A 24xx is read in the same SOIC-8
+  clip as SPI flash: the firmware lends the SPI pins to I2C (SDA on MOSI, SCL
+  on CLK) and weakly holds the part's WP pin high. EEPROMs have no ID, so the
+  part is picked in the menu (**[P]**, saved) or with `dump.py --chip`, which
+  now also takes aliases such as `AT24C256`; the device checks the part is
+  present (I2C address scan, SPI status) before using a pick or a push. The
+  command session goes to v3 (`I` reports the I2C scan and the SPI status).
 - **SPI NOR flash.** The dumper now reads SPI NOR chips as well as SPI NAND,
   with the same wiring and tools. The family is detected from how the chip
   answers read-ID (a match in both families is refused, not guessed). 366

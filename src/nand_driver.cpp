@@ -7,6 +7,7 @@
 
 static spi_device_handle_t s_spi;
 static spi_device_interface_config_t s_devcfg;  // kept so nand_set_clock can re-add the device
+static spi_bus_config_t s_buscfg;               // kept so nand_bus_restore can re-init the bus
 static uint8_t *s_verify_buf = NULL;
 
 // Feature-register access, from the active profile (family defaults until then).
@@ -24,6 +25,7 @@ static void spi_bus_xfer(void *, uint8_t cmd, uint32_t addr, uint8_t addr_bits,
   t.address_bits = addr_bits;
   t.base.rxlength = rx_len * 8;
   t.base.rx_buffer = rx;
+  if (!s_spi) { if (rx) memset(rx, 0xFF, rx_len); return; }   // bus lent to I2C
   spi_device_polling_transmit(s_spi, (spi_transaction_t *)&t);
 }
 static void spi_bus_wait(void *) { nand_wait_ready(); }
@@ -43,6 +45,7 @@ void nand_spi_xfer(uint8_t cmd, uint32_t addr, uint8_t addr_bits, uint8_t dummy_
   t.dummy_bits = dummy_bits;
   t.base.rxlength = rx_len * 8;
   t.base.rx_buffer = small ? NULL : rx;
+  if (!s_spi) { if (rx) memset(rx, 0xFF, rx_len); return; }   // bus lent to I2C
   spi_device_polling_transmit(s_spi, (spi_transaction_t *)&t);
   if (small) memcpy(rx, t.base.rx_data, rx_len);
 }
@@ -53,13 +56,13 @@ esp_err_t nand_init(const nand_config_t *config, int max_page_size) {
   nand_seq_init(&s_seq, bus);
   nand_seq_set_quad(&s_seq, config->read_mode == NAND_READ_QUAD);
 
-  spi_bus_config_t buscfg = {};
-  buscfg.mosi_io_num = config->pin_d0;
-  buscfg.miso_io_num = config->pin_d1;
-  buscfg.sclk_io_num = config->pin_clk;
-  buscfg.quadwp_io_num = config->pin_d2;
-  buscfg.quadhd_io_num = config->pin_d3;
-  buscfg.max_transfer_sz = max_page_size + 16;
+  s_buscfg = {};
+  s_buscfg.mosi_io_num = config->pin_d0;
+  s_buscfg.miso_io_num = config->pin_d1;
+  s_buscfg.sclk_io_num = config->pin_clk;
+  s_buscfg.quadwp_io_num = config->pin_d2;
+  s_buscfg.quadhd_io_num = config->pin_d3;
+  s_buscfg.max_transfer_sz = max_page_size + 16;
 
   s_devcfg = {};
   s_devcfg.clock_speed_hz = config->clock_hz;
@@ -70,7 +73,7 @@ esp_err_t nand_init(const nand_config_t *config, int max_page_size) {
   s_devcfg.command_bits = 8;
   s_devcfg.address_bits = 0;  // variable per transaction
 
-  esp_err_t ret = spi_bus_initialize(NAND_SPI_HOST, &buscfg, SPI_DMA_CH_AUTO);
+  esp_err_t ret = spi_bus_initialize(NAND_SPI_HOST, &s_buscfg, SPI_DMA_CH_AUTO);
   if (ret != ESP_OK) return ret;
   // Pull MISO up so an empty socket (or a chip ignoring an opcode) reads 0xFF
   // rather than noise: detection then sees a flat ID, not a random one.
@@ -100,6 +103,24 @@ esp_err_t nand_set_clock(int clock_hz) {
   return spi_bus_add_device(NAND_SPI_HOST, &s_devcfg, &s_spi);
 }
 
+// Hand the clip's pins to another bus (I2C EEPROM, eeprom_driver.cpp) and
+// take them back. The device keeps its clock; the verify buffer is kept.
+esp_err_t nand_bus_release(void) {
+  if (!s_spi) return ESP_OK;
+  esp_err_t ret = spi_bus_remove_device(s_spi);
+  if (ret != ESP_OK) return ret;
+  s_spi = NULL;
+  return spi_bus_free(NAND_SPI_HOST);
+}
+
+esp_err_t nand_bus_restore(void) {
+  if (s_spi) return ESP_OK;
+  esp_err_t ret = spi_bus_initialize(NAND_SPI_HOST, &s_buscfg, SPI_DMA_CH_AUTO);
+  if (ret != ESP_OK) return ret;
+  gpio_pullup_en((gpio_num_t)s_buscfg.miso_io_num);
+  return spi_bus_add_device(NAND_SPI_HOST, &s_devcfg, &s_spi);
+}
+
 void nand_apply_profile(const active_profile_t *p) {
   s_op_get_feat = p->op_get_feat;
   s_op_set_feat = p->op_set_feat;
@@ -112,6 +133,7 @@ void nand_apply_profile(const active_profile_t *p) {
 void nand_reset(void) {
   spi_transaction_t t = {};
   t.cmd = 0xFF;
+  if (!s_spi) return;
   spi_device_polling_transmit(s_spi, &t);
 }
 
@@ -122,6 +144,7 @@ uint8_t nand_get_feature(uint8_t addr) {
   t.base.addr = addr;
   t.address_bits = 8;
   t.base.rxlength = 8;
+  if (!s_spi) return 0xFF;
   spi_device_polling_transmit(s_spi, (spi_transaction_t *)&t);
   return t.base.rx_data[0];
 }
@@ -134,6 +157,7 @@ void nand_set_feature(uint8_t addr, uint8_t value) {
   t.address_bits = 8;
   t.base.length = 8;
   t.base.tx_data[0] = value;
+  if (!s_spi) return;
   spi_device_polling_transmit(s_spi, (spi_transaction_t *)&t);
 }
 

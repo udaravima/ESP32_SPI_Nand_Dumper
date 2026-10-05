@@ -130,8 +130,8 @@ Each TCP connection is a short command session
 
 | Command | Payload | Reply |
 |---|---|---|
-| `'I'` | none | info: session ver u8, schema ver u8, max page u32, detected ID[3] (SPI NAND view), state u8 (0 resident, 1 unknown, 2 ambiguous, 3 pushed, 4 sfdp), active profile name[24], then in session v2: SPI NOR ID view[3], active family u8 (0 NAND, 1 NOR). 38 bytes (v1: 34) |
-| `'P'` | a 138-byte `PRF` blob (`tools/chipdb.py --blob`) | echo: name[24], page/spare/ppb/blocks u32, planes u8, expected ID[3] + id_flags, detected ID[3] (in the profile family's view), blob CRC32, family u8 (v2). 53 bytes (v1: 52) |
+| `'I'` | none | info: session ver u8, schema ver u8, max page u32, detected ID[3] (SPI NAND view), state u8 (0 resident, 1 unknown, 2 ambiguous, 3 pushed, 4 sfdp), active profile name[24], then in session v2: SPI NOR ID view[3], active family u8 (0 NAND, 1 NOR, 2 I2C EEPROM, 3 SPI EEPROM), then in session v3: I2C ACK mask u8 (bit i = 0x50 + i), SPI EEPROM status u8. 40 bytes (v2: 38, v1: 34). State 5 is `picked` (an EEPROM named by the user) |
+| `'P'` | a 138-byte `PRF` blob (`tools/chipdb.py --blob`) | echo: name[24], page/spare/ppb/blocks u32, planes u8, expected ID[3] + id_flags, detected ID[3] (in the profile family's view; for an EEPROM the presence byte it compared, then two zeros), blob CRC32, family u8 (v2). 53 bytes (v1: 52) |
 | `'A'` | the staged blob's CRC32 (u32) | empty |
 | `'G'` | none | the 32-byte dump header and the page stream (below) |
 
@@ -141,7 +141,7 @@ Every reply to `I`/`P`/`A`, and a refused `G`, is one frame:
 
 A push is **fail-closed and two-phase**. `P` runs the framing, structure and
 geometry checks, then the ID cross-check against the chip the device read. Only
-then is the profile *staged*, and the device echoes it back. `dump.py` compares
+then is the profile *staged*, and the device echoes it back. A serial EEPROM has no ID, so its profile is bound by presence instead: an I2C part must acknowledge at every address it occupies, a SPI part must return a plausible status register. `dump.py` compares
 the echo field by field with what it sent, and only then sends `A` with the
 blob's CRC, which makes the staged profile live. A failed push discards the
 profile and anything staged before it; an `A` with the wrong CRC disarms; a `G`
@@ -268,4 +268,5 @@ The reasoning behind these decisions is captured in:
 
 - Spec: [`superpowers/specs/2026-08-15-nand-dumper-generalization-design.md`](superpowers/specs/2026-08-15-nand-dumper-generalization-design.md)
 - Spec: [`superpowers/specs/2026-10-05-spi-nor-design.md`](superpowers/specs/2026-10-05-spi-nor-design.md) (SPI NOR, profile schema v2, session v2)
+- Spec: [`superpowers/specs/2026-10-05-eeprom-design.md`](superpowers/specs/2026-10-05-eeprom-design.md) (I2C/SPI serial EEPROM, I2C in the SPI clip, session v3)
 - Plan: [`superpowers/plans/2026-08-15-nand-dumper-generalization.md`](superpowers/plans/2026-08-15-nand-dumper-generalization.md) (Task 14 is the hardware bench checklist)

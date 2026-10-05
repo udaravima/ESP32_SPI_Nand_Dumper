@@ -79,10 +79,56 @@ static nand_prf_err_t check_nor(const active_profile_t *p, uint32_t max_page_siz
   return NAND_PRF_OK;
 }
 
+// EEPROM branch of nand_profile_check. Mirrors chipdb._check_eeprom().
+static nand_prf_err_t check_eeprom(const active_profile_t *p, uint32_t max_page_size) {
+  if (p->op_page_read || p->op_status_addr || p->op_cfg_addr || p->ecc_en_bit ||
+      p->ecc_shift || p->ecc_mask || !all_zero(p->ecc_map, sizeof(p->ecc_map)) ||
+      p->status2_reg || p->qe_addr || p->qe_bit || p->planes != 1 ||
+      p->bbm_off || p->bbm_len || p->bbm_good || p->bbm_pages ||
+      p->oob_free_n || p->oob_ecc_n || !all_zero(p->oob_free, sizeof(p->oob_free)) ||
+      !all_zero(p->oob_ecc, sizeof(p->oob_ecc)))
+    return NAND_PRF_E_STRUCTURE;
+  // No ID, no quad, no 4-byte mode, nothing that writes.
+  if (p->id_mfr || p->id_dev || p->id_dev2 || p->id_flags ||
+      p->id_method != NAND_ID_METHOD_NONE || p->id_n_bytes != 0)
+    return NAND_PRF_E_STRUCTURE;
+  if (p->addr4_mode || p->dummy_x1 || p->dummy_x4 || p->qer ||
+      p->read_mode != NAND_READ_SINGLE || p->op_read_cache_x4 || p->op_set_feat)
+    return NAND_PRF_E_STRUCTURE;
+  if (p->family == CHIP_FAMILY_SPI_EEPROM) {
+    if (!p->op_read_cache || !p->op_get_feat || (p->op_read_cache & 0x08))
+      return NAND_PRF_E_STRUCTURE;
+    if (p->addr_bytes < 1 || p->addr_bytes > 3) return NAND_PRF_E_STRUCTURE;
+    bool none = p->dev_addr_bits == 0 && p->dev_addr_shift == 0;
+    bool a8 = p->dev_addr_bits == 1 && p->dev_addr_shift == 3 && p->addr_bytes == 1;
+    if (!none && !a8) return NAND_PRF_E_STRUCTURE;
+  } else {
+    if (p->op_read_cache || p->op_get_feat) return NAND_PRF_E_STRUCTURE;
+    if (p->addr_bytes != 1 && p->addr_bytes != 2) return NAND_PRF_E_STRUCTURE;
+    if (p->dev_addr_bits > 3 || p->dev_addr_shift + p->dev_addr_bits > 3)
+      return NAND_PRF_E_STRUCTURE;
+  }
+
+  uint32_t page = p->page_size, ppb = p->pages_per_block;
+  if (p->spare_size != 0) return NAND_PRF_E_GEOMETRY;
+  if (page == 0 || (page & (page - 1))) return NAND_PRF_E_GEOMETRY;
+  if (ppb == 0 || (ppb & (ppb - 1)) || p->total_blocks == 0) return NAND_PRF_E_GEOMETRY;
+  uint64_t size = (uint64_t)page * ppb * p->total_blocks;
+  if ((size & (size - 1)) || size < EEPROM_MIN_SIZE || size > EEPROM_MAX_SIZE)
+    return NAND_PRF_E_GEOMETRY;
+  // The address (plus its carried bits) must reach the whole part, or the
+  // read would wrap and dump the first half twice.
+  if (size > (1ull << (8 * p->addr_bytes + p->dev_addr_bits))) return NAND_PRF_E_GEOMETRY;
+  if (page > max_page_size) return NAND_PRF_E_PAGE_TOO_BIG;
+  return NAND_PRF_OK;
+}
+
 nand_prf_err_t nand_profile_check(const active_profile_t *p, uint32_t max_page_size) {
   // Tier 2: structural. Mirrors chipdb.check_flat().
   if (memchr(p->name, '\0', sizeof(p->name)) == NULL) return NAND_PRF_E_STRUCTURE;
   if (!all_zero(p->_pad1, sizeof(p->_pad1))) return NAND_PRF_E_STRUCTURE;
+  if (chip_family_is_eeprom(p->family)) return check_eeprom(p, max_page_size);
+  if (p->dev_addr_bits || p->dev_addr_shift) return NAND_PRF_E_STRUCTURE;
   if (p->family == CHIP_FAMILY_SPI_NOR) return check_nor(p, max_page_size);
   if (p->family != CHIP_FAMILY_SPI_NAND) return NAND_PRF_E_STRUCTURE;
   if (p->addr_bytes || p->addr4_mode || p->dummy_x1 || p->dummy_x4 || p->qer)
@@ -150,6 +196,7 @@ const active_profile_t *nand_profile_find_family(const active_profile_t *table, 
   for (unsigned i = 0; i < n; i++) {
     const active_profile_t *t = &table[i];
     if (family != CHIP_FAMILY_ANY && t->family != family) continue;
+    if (chip_family_is_eeprom(t->family)) continue;   // no ID to match
     if (t->id_mfr != mfr || t->id_dev != dev) continue;
     bool has_dev2 = t->id_flags & NAND_PROFILE_ID_HAS_DEV2;
     if (has_dev2 && t->id_dev2 != dev2) continue;
@@ -174,8 +221,18 @@ const active_profile_t *nand_profile_pick(const active_profile_t *table, unsigne
                                           uint8_t mfr, uint8_t dev, const char *name) {
   if (!name || !name[0]) return NULL;
   for (unsigned i = 0; i < n; i++)
-    if (table[i].id_mfr == mfr && table[i].id_dev == dev &&
+    if (!chip_family_is_eeprom(table[i].family) &&
+        table[i].id_mfr == mfr && table[i].id_dev == dev &&
         strncmp(table[i].name, name, sizeof(table[i].name)) == 0)
+      return &table[i];
+  return NULL;
+}
+
+const active_profile_t *nand_profile_by_name(const active_profile_t *table, unsigned n,
+                                             uint8_t family, const char *name) {
+  if (!name || !name[0]) return NULL;
+  for (unsigned i = 0; i < n; i++)
+    if (table[i].family == family && strncmp(table[i].name, name, sizeof(table[i].name)) == 0)
       return &table[i];
   return NULL;
 }

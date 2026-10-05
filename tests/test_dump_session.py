@@ -341,7 +341,8 @@ def device_bin(tmp_path_factory):
         pytest.skip("no C++ compiler")
     out = str(tmp_path_factory.mktemp("dev") / "session_device")
     src = [os.path.join(ROOT, p) for p in ("tests/session_device.cpp", "src/nand_session.cpp",
-                                           "src/nand_profile.cpp", "src/dump_header.cpp")]
+                                           "src/nand_profile.cpp", "src/dump_header.cpp",
+                                           "src/eeprom_seq.cpp")]
     subprocess.run([cxx, "-std=gnu++17", "-I", os.path.join(ROOT, "src"), *src, "-o", out],
                    check=True)
     return out
@@ -349,8 +350,10 @@ def device_bin(tmp_path_factory):
 
 class PipeDevice:
     """A socket-shaped wrapper around the session_device process."""
-    def __init__(self, exe, ident, nor_id=()):
-        self.p = subprocess.Popen([exe, *(f"{b:02X}" for b in (*ident, *nor_id))],
+    def __init__(self, exe, ident, nor_id=(), presence=()):
+        # presence = (I2C ACK mask, SPI EEPROM status); needs nor_id too.
+        args = (*ident, *nor_id, *presence)
+        self.p = subprocess.Popen([exe, *(f"{b:02X}" for b in args)],
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE)
 
     def sendall(self, data):
@@ -408,3 +411,78 @@ def test_c_device_refuses_nor_profile_when_only_the_nand_view_matches(device_bin
     with pytest.raises(dump.SessionError, match="E_ID_MISMATCH"):
         dump.prepare_profile(dev, "W25Q128.V", {})
     dev.close()
+
+
+# ---- serial EEPROM (session v3) ----------------------------------------------------
+def info_v3_payload(mask=0, sr=0xFF, state=1, name=b"MANUAL", family=0):
+    return struct.pack(dump.INFO_V3_FMT, 3, chipdb.SCHEMA_VER, 8192, bytes(FLAT_BUS), state,
+                       name, bytes(FLAT_BUS), family, mask, sr)
+
+
+def test_info_v3_parses_eeprom_presence():
+    info = dump.parse_info(info_v3_payload(mask=0x0F, sr=0x0C, state=5, name=b"24C256",
+                                           family=2))
+    assert info["session_ver"] == 3
+    assert info["i2c_ack_mask"] == 0x0F and info["spi_ee_status"] == 0x0C
+    assert info["state"] == "picked" and info["family"] == "i2c-eeprom"
+    assert dump.detected_id(info, "i2c-eeprom") == (0x0F, 0, 0)
+    assert dump.detected_id(info, "spi-eeprom") == (0x0C, 0, 0)
+    v2 = dump.parse_info(info_v2_payload())
+    assert v2["i2c_ack_mask"] is None and v2["spi_ee_status"] is None
+
+
+def test_hint_lists_the_i2c_parts_that_fit():
+    db = chipdb.load_db()
+    info = dump.parse_info(info_v3_payload(mask=0x03))
+    (hint,) = dump.eeprom_hint(info, db)
+    assert "0x50, 0x51" in hint
+    fits = hint.split("parts that fit: ")[1].split(", ")
+    assert "24C04" in fits and "24C02" in fits and "24C16" not in fits
+    info = dump.parse_info(info_v3_payload(sr=0x00))
+    (hint,) = dump.eeprom_hint(info, db)
+    assert "SPI EEPROM" in hint
+    assert dump.eeprom_hint(dump.parse_info(info_v3_payload()), db) == []
+
+
+def test_eeprom_pick_needs_v3_firmware():
+    info = dump.parse_info(info_v2_payload(nor_id=FLAT_BUS))
+    with pytest.raises(chipdb.ChipDBError, match="predates EEPROM"):
+        dump.resolve_profile(info, "AT24C256", {})
+
+
+def test_dump_family_from_header_flags():
+    assert dump.dump_family(0) == "spi-nand"
+    assert dump.dump_family(dump.FLAG_NOR) == "spi-nor"
+    assert dump.dump_family(dump.FLAG_EEPROM) == "spi-eeprom"
+    assert dump.dump_family(dump.FLAG_EEPROM | dump.FLAG_I2C) == "i2c-eeprom"
+
+
+def test_c_device_arms_an_i2c_eeprom_named_by_alias(device_bin, tmp_path, monkeypatch):
+    monkeypatch.setattr(dump, "CONFIG_PATH", str(tmp_path / "cfg.json"))
+    dev = PipeDevice(device_bin, FLAT_BUS, FLAT_BUS, (0x01, 0xFF))
+    prof = dump.prepare_profile(dev, "AT24C256", {})
+    assert prof["name"] == "24C256" and prof["family"] == "i2c-eeprom"
+    dev.sendall(b"G")
+    assert dump.recv_exact(dev, 24).rstrip(b"\0") == b"24C256"
+    assert dev.close() == 0
+    assert not (tmp_path / "cfg.json").exists()       # an EEPROM pick is never remembered
+
+
+def test_c_device_refuses_an_i2c_part_whose_addresses_do_not_answer(device_bin):
+    dev = PipeDevice(device_bin, FLAT_BUS, FLAT_BUS, (0x01, 0xFF))
+    with pytest.raises(dump.SessionError, match="E_ID_MISMATCH"):
+        dump.prepare_profile(dev, "24C16", {})        # a 24C16 answers at all eight
+    dev.close()
+
+
+def test_c_device_spi_eeprom_needs_a_plausible_status(device_bin):
+    dev = PipeDevice(device_bin, FLAT_BUS, FLAT_BUS, (0x00, 0xFF))
+    with pytest.raises(dump.SessionError, match="E_ID_MISMATCH"):
+        dump.prepare_profile(dev, "25LC040A", {})     # RDSR read 0xFF: nothing there
+    dev.close()
+    dev = PipeDevice(device_bin, FLAT_BUS, FLAT_BUS, (0x00, 0x00))
+    prof = dump.prepare_profile(dev, "25LC040A", {})
+    assert prof["name"] == "25xx040" and prof["family"] == "spi-eeprom"
+    dev.sendall(b"G")
+    assert dump.recv_exact(dev, 24).rstrip(b"\0") == b"25xx040"
+    assert dev.close() == 0

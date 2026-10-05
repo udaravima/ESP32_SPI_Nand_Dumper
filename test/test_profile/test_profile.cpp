@@ -326,8 +326,9 @@ void test_nor_checks_fail_closed(void) {
     { [](active_profile_t *q) { q->dummy_x4 = 40; }, NAND_PRF_E_STRUCTURE },
     { [](active_profile_t *q) { q->id_method = NAND_ID_METHOD_DUMMY; }, NAND_PRF_E_STRUCTURE },
     { [](active_profile_t *q) { q->op_read_cache = 0; }, NAND_PRF_E_STRUCTURE },
-    { [](active_profile_t *q) { q->family = 2; }, NAND_PRF_E_STRUCTURE },
-    { [](active_profile_t *q) { q->_pad1[4] = 1; }, NAND_PRF_E_STRUCTURE },
+    { [](active_profile_t *q) { q->family = CHIP_FAMILY_COUNT; }, NAND_PRF_E_STRUCTURE },
+    { [](active_profile_t *q) { q->family = CHIP_FAMILY_I2C_EEPROM; }, NAND_PRF_E_STRUCTURE },
+    { [](active_profile_t *q) { q->_pad1[2] = 1; }, NAND_PRF_E_STRUCTURE },
     { [](active_profile_t *q) { q->page_size = 3000; }, NAND_PRF_E_GEOMETRY },
     { [](active_profile_t *q) { q->total_blocks = 512; }, NAND_PRF_E_GEOMETRY },  // 32 MiB, 3-byte
     { [](active_profile_t *q) { q->page_size = 16384; q->pages_per_block = 4; },
@@ -357,6 +358,35 @@ void test_manual_nor_profile(void) {
   TEST_ASSERT_EQUAL_UINT8(NOR_ADDR4_ENTER, p.addr4_mode);
 }
 
+// EEPROM blobs packed by chipdb.py unpack to the resident entries, with the
+// address bits carried outside the word address (I2C device address, SPI
+// opcode bit 3) in the two former pad bytes.
+void test_golden_eeprom_blobs_unpack_and_equal_resident(void) {
+  active_profile_t p;
+  TEST_ASSERT_EQUAL_INT(NAND_PRF_OK,
+      nand_profile_unpack(GOLDEN_24CM02, sizeof(GOLDEN_24CM02), MAX_PAGE, &p));
+  TEST_ASSERT_EQUAL_MEMORY(resident("24CM02"), &p, sizeof(p));
+  TEST_ASSERT_EQUAL_UINT8(CHIP_FAMILY_I2C_EEPROM, p.family);
+  TEST_ASSERT_EQUAL_UINT32(256u << 10, nand_profile_bytes(&p));
+  TEST_ASSERT_EQUAL_UINT8(2, p.addr_bytes);
+  TEST_ASSERT_EQUAL_UINT8(2, p.dev_addr_bits);
+  TEST_ASSERT_EQUAL_UINT8(0, p.dev_addr_shift);
+  TEST_ASSERT_EQUAL_UINT8(0, p.id_n_bytes);
+  TEST_ASSERT_EQUAL_HEX8(0x00, p.op_read_cache);
+
+  TEST_ASSERT_EQUAL_INT(NAND_PRF_OK,
+      nand_profile_unpack(GOLDEN_25xx040, sizeof(GOLDEN_25xx040), MAX_PAGE, &p));
+  TEST_ASSERT_EQUAL_MEMORY(resident("25xx040"), &p, sizeof(p));
+  TEST_ASSERT_EQUAL_UINT8(CHIP_FAMILY_SPI_EEPROM, p.family);
+  TEST_ASSERT_EQUAL_UINT32(512, nand_profile_bytes(&p));
+  TEST_ASSERT_EQUAL_HEX8(0x03, p.op_read_cache);
+  TEST_ASSERT_EQUAL_HEX8(0x05, p.op_get_feat);
+  TEST_ASSERT_EQUAL_HEX8(0x00, p.op_set_feat);
+  TEST_ASSERT_EQUAL_UINT8(1, p.addr_bytes);
+  TEST_ASSERT_EQUAL_UINT8(1, p.dev_addr_bits);
+  TEST_ASSERT_EQUAL_UINT8(3, p.dev_addr_shift);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_struct_size_matches_host_layout);
@@ -378,5 +408,6 @@ int main(int, char **) {
   RUN_TEST(test_golden_nor_blobs_unpack_and_equal_resident);
   RUN_TEST(test_nor_checks_fail_closed);
   RUN_TEST(test_manual_nor_profile);
+  RUN_TEST(test_golden_eeprom_blobs_unpack_and_equal_resident);
   return UNITY_END();
 }

@@ -1,0 +1,17 @@
+# I2C serial EEPROM (24-series: 24C01 .. 24CM02 and their clones). There is no
+# READ ID: the part is named by the user or the host, and the device only
+# checks that something acknowledges at the addresses the part occupies.
+#
+# A read is the standard "random read": START, device address + W, the word
+# address (1 or 2 bytes), repeated START, device address + R, then sequential
+# data until the master NACKs and sends STOP. The word-address write is never
+# followed by a data byte or a STOP, so no write cycle can start.
+#
+# Parts larger than their word address reaches put the high address bits in
+# the device address (24C04/08/16: P0..P2, 24CM01/24CM02: A16/A17), usually in
+# bit 0 up; Microchip's 24xx1025 puts its block bit at bit 2 instead.
+i2c-eeprom:
+  base_address: 0x50            # 1010 A2 A1 A0
+  scan: [0x50, 0x57]            # an address-only write (START, addr+W, STOP) never writes
+  read_unit: 256                # bytes per dump frame
+  clock_hz: {default: 100000, max: 400000}

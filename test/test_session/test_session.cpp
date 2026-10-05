@@ -41,6 +41,8 @@ void setUp(void) {
   nand_profile_manual(&resident_active, 2112, 64, 64, 1024, 1);
   S.id[0] = 0xE5; S.id[1] = 0x71; S.id[2] = 0x00;     // a DS35 in the socket
   S.nor_id[0] = 0xFF; S.nor_id[1] = 0xE5; S.nor_id[2] = 0x71;   // its plain-9Fh view
+  S.i2c_ack_mask = 0x00;                                // nothing on I2C
+  S.spi_ee_status = 0xFF;                               // no SPI EEPROM status
   S.chip_state = NAND_CHIP_UNKNOWN;
   S.active = &resident_active;
   S.max_page_size = MAX_PAGE;
@@ -279,8 +281,8 @@ void test_info_v2_carries_nor_id_and_family(void) {
   feed("I", 1);
   run();
   resp_t r = next_resp();
-  TEST_ASSERT_EQUAL_UINT16(38, r.len);
-  TEST_ASSERT_EQUAL_UINT8(2, r.payload[0]);                   // session v2
+  TEST_ASSERT_EQUAL_UINT16(40, r.len);                        // v2's 38 + v3's 2
+  TEST_ASSERT_EQUAL_UINT8(3, r.payload[0]);                   // session v3
   TEST_ASSERT_EQUAL_HEX8(0xEF, r.payload[34]);
   TEST_ASSERT_EQUAL_HEX8(0x40, r.payload[35]);
   TEST_ASSERT_EQUAL_HEX8(0x18, r.payload[36]);
@@ -319,6 +321,54 @@ void test_nor_capacity_byte_must_match(void) {
   TEST_ASSERT_EQUAL_UINT8(NAND_PRF_E_ID_MISMATCH, next_resp().status);
 }
 
+// ---- Serial EEPROM (session v3) ------------------------------------------------------
+void test_info_v3_carries_eeprom_presence(void) {
+  S.i2c_ack_mask = 0x0F;
+  S.spi_ee_status = 0x0C;
+  feed("I", 1);
+  run();
+  resp_t r = next_resp();
+  TEST_ASSERT_EQUAL_UINT16(NAND_INFO_SIZE, r.len);
+  TEST_ASSERT_EQUAL_HEX8(0x0F, r.payload[38]);
+  TEST_ASSERT_EQUAL_HEX8(0x0C, r.payload[39]);
+}
+
+void test_i2c_eeprom_push_needs_its_addresses_to_answer(void) {
+  S.i2c_ack_mask = 0x01;                                      // a 24C02-sized footprint
+  push(GOLDEN_24CM02);                                        // needs four addresses
+  run();
+  resp_t r = next_resp();
+  TEST_ASSERT_EQUAL_UINT8(NAND_PRF_E_ID_MISMATCH, r.status);
+  TEST_ASSERT_EQUAL_HEX8(0x01, r.payload[45]);                // the ACK mask it compared
+  TEST_ASSERT_EQUAL_UINT8(CHIP_FAMILY_I2C_EEPROM, r.payload[52]);
+  TEST_ASSERT_FALSE(S.has_staged);
+
+  S.i2c_ack_mask = 0xF0;                                      // 0x54..0x57
+  push(GOLDEN_24CM02);
+  feed("A", 1); feed_u32(blob_crc(GOLDEN_24CM02));
+  TEST_ASSERT_EQUAL_INT(NAND_SESS_ARMED, run());
+  r = next_resp();
+  TEST_ASSERT_EQUAL_UINT8(NAND_PRF_OK, r.status);
+  TEST_ASSERT_EQUAL_HEX8(0x00, r.payload[41]);                // expected ID: none
+  TEST_ASSERT_EQUAL_HEX8(0xF0, r.payload[45]);
+  TEST_ASSERT_EQUAL_UINT8(NAND_PRF_OK, next_resp().status);   // ARM
+  TEST_ASSERT_EQUAL_UINT8(CHIP_FAMILY_I2C_EEPROM, S.armed.family);
+}
+
+void test_spi_eeprom_push_needs_a_plausible_status(void) {
+  push(GOLDEN_25xx040);                                       // RDSR read 0xFF: empty
+  run();
+  TEST_ASSERT_EQUAL_UINT8(NAND_PRF_E_ID_MISMATCH, next_resp().status);
+  S.spi_ee_status = 0x8C;                                     // WPEN + BP bits: a 25xx
+  push(GOLDEN_25xx040);
+  feed("A", 1); feed_u32(blob_crc(GOLDEN_25xx040));
+  TEST_ASSERT_EQUAL_INT(NAND_SESS_ARMED, run());
+  resp_t r = next_resp();
+  TEST_ASSERT_EQUAL_UINT8(NAND_PRF_OK, r.status);
+  TEST_ASSERT_EQUAL_HEX8(0x8C, r.payload[45]);
+  TEST_ASSERT_EQUAL_UINT8(CHIP_FAMILY_SPI_EEPROM, r.payload[52]);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_bare_go_still_dumps);
@@ -339,5 +389,8 @@ int main(int, char **) {
   RUN_TEST(test_nor_push_is_checked_against_the_nor_id);
   RUN_TEST(test_nor_profile_for_a_nand_socket_is_refused);
   RUN_TEST(test_nor_capacity_byte_must_match);
+  RUN_TEST(test_info_v3_carries_eeprom_presence);
+  RUN_TEST(test_i2c_eeprom_push_needs_its_addresses_to_answer);
+  RUN_TEST(test_spi_eeprom_push_needs_a_plausible_status);
   return UNITY_END();
 }

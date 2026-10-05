@@ -20,8 +20,11 @@ import chipdb  # noqa: E402
 
 DEFAULT_OUT = os.path.join(chipdb.REPO, "src", "nand_profiles_generated.h")
 GOLDEN_OUT = os.path.join(chipdb.REPO, "test", "test_profile", "golden_blobs.h")
-# Two NAND chips plus a 3-byte and a 4-byte (native opcode) SPI NOR chip.
-GOLDEN_CHIPS = ("DS35Q1GA", "MT29F2G01ABAGD", "W25Q128.V", "MX25L25635F")
+# Two NAND chips, a 3-byte and a 4-byte (native opcode) SPI NOR chip, an I2C
+# EEPROM with address bits in the device address and a SPI EEPROM with A8 in
+# the opcode.
+GOLDEN_CHIPS = ("DS35Q1GA", "MT29F2G01ABAGD", "W25Q128.V", "MX25L25635F", "24CM02",
+                "25xx040")
 
 
 def _hex(v):
@@ -32,7 +35,12 @@ def _row(f):
     ecc_map = ", ".join(str(s) for s in f["ecc_map"])
     free = ", ".join(str(v) for v in f["oob_free"])
     ecc = ", ".join(str(v) for v in f["oob_ecc"])
-    if f["family"] == "spi-nor":
+    if f["family"] in chipdb.EEPROM_FAMILIES:
+        what = "%s, %d B, %d-byte address" % (
+            f["family"], f["size_bytes"], f["addr_bytes"])
+        if f["dev_addr_bits"]:
+            what += " + %d bit(s) at %d" % (f["dev_addr_bits"], f["dev_addr_shift"])
+    elif f["family"] == "spi-nor":
         what = "%s profile, %d KiB, %d-byte address" % (
             f["profile"], f["size_bytes"] >> 10, f["addr_bytes"])
     else:
@@ -48,7 +56,7 @@ def _row(f):
         "    %d, %d, %s, %d, %d, %s,\n"
         "    { %s },\n"
         "    { %s },\n"
-        "    %d, %d, %d, %d, %d, { 0 } }"
+        "    %d, %d, %d, %d, %d, %d, %d, { 0 } }"
         % (f["name"], what,
            f["name"], _hex(f["id_mfr"]), _hex(f["id_dev"]), _hex(f["id_dev2"]),
            _hex(f["id_flags"]),
@@ -62,7 +70,8 @@ def _row(f):
            f["vcc_mv"],
            f["bbm_off"], f["bbm_len"], _hex(f["bbm_good"]), f["oob_free_n"], f["oob_ecc_n"],
            _hex(f["bbm_pages"]), free, ecc,
-           f["addr_bytes"], f["addr4_mode"], f["dummy_x1"], f["dummy_x4"], f["qer"]))
+           f["addr_bytes"], f["addr4_mode"], f["dummy_x1"], f["dummy_x4"], f["qer"],
+           f["dev_addr_bits"], f["dev_addr_shift"]))
 
 
 def render_header(db):
