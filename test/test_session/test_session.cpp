@@ -40,6 +40,7 @@ void setUp(void) {
   memset(&S, 0, sizeof(S));
   nand_profile_manual(&resident_active, 2112, 64, 64, 1024, 1);
   S.id[0] = 0xE5; S.id[1] = 0x71; S.id[2] = 0x00;     // a DS35 in the socket
+  S.nor_id[0] = 0xFF; S.nor_id[1] = 0xE5; S.nor_id[2] = 0x71;   // its plain-9Fh view
   S.chip_state = NAND_CHIP_UNKNOWN;
   S.active = &resident_active;
   S.max_page_size = MAX_PAGE;
@@ -125,7 +126,7 @@ void test_push_echo_arm_go(void) {
   TEST_ASSERT_EQUAL_UINT8(1, p.payload[40]);                  // planes
   TEST_ASSERT_EQUAL_HEX8(0xE5, p.payload[41]);                // expected mfr
   TEST_ASSERT_EQUAL_HEX8(0xE5, p.payload[45]);                // detected mfr
-  TEST_ASSERT_EQUAL_MEMORY(GOLDEN_DS35Q1GA + 126, p.payload + 48, 4);   // blob CRC
+  TEST_ASSERT_EQUAL_MEMORY(GOLDEN_DS35Q1GA + 6 + NAND_PROFILE_SIZE, p.payload + 48, 4);   // blob CRC
 
   resp_t a = next_resp();
   TEST_ASSERT_EQUAL_UINT8('A', a.cmd);
@@ -152,10 +153,12 @@ void test_push_for_another_chip_is_refused(void) {
 void test_dev2_mismatch_is_refused(void) {
   uint8_t blob[NAND_PROFILE_BLOB_SIZE];
   memcpy(blob, GOLDEN_DS35Q1GA, sizeof(blob));
-  active_profile_t *p = (active_profile_t *)(blob + 6);
-  p->id_dev2 = 0x05; p->id_flags = NAND_PROFILE_ID_HAS_DEV2;
+  active_profile_t p;                         // blob + 6 is not 4-byte aligned
+  memcpy(&p, blob + 6, sizeof(p));
+  p.id_dev2 = 0x05; p.id_flags = NAND_PROFILE_ID_HAS_DEV2;
+  memcpy(blob + 6, &p, sizeof(p));
   uint32_t crc = dump_crc32(blob, 6 + NAND_PROFILE_SIZE);
-  memcpy(blob + 126, &crc, 4);
+  memcpy(blob + 6 + NAND_PROFILE_SIZE, &crc, 4);
   push(blob);
   run();
   TEST_ASSERT_EQUAL_UINT8(NAND_PRF_E_ID_MISMATCH, next_resp().status);
@@ -209,9 +212,10 @@ void test_failed_push_clears_an_earlier_stage(void) {
 void test_insane_geometry_is_refused(void) {
   uint8_t blob[NAND_PROFILE_BLOB_SIZE];
   memcpy(blob, GOLDEN_DS35Q1GA, sizeof(blob));
-  ((active_profile_t *)(blob + 6))->page_size = 16384;      // > the page buffer
+  uint32_t big = 16384;                                     // > the page buffer
+  memcpy(blob + 6 + offsetof(active_profile_t, page_size), &big, 4);
   uint32_t crc = dump_crc32(blob, 6 + NAND_PROFILE_SIZE);
-  memcpy(blob + 126, &crc, 4);
+  memcpy(blob + 6 + NAND_PROFILE_SIZE, &crc, 4);
   push(blob);
   run();
   TEST_ASSERT_EQUAL_UINT8(NAND_PRF_E_PAGE_TOO_BIG, next_resp().status);
@@ -221,7 +225,7 @@ void test_insane_geometry_is_refused(void) {
 void test_unknown_framing_closes_the_connection(void) {
   uint8_t blob[NAND_PROFILE_BLOB_SIZE];
   memcpy(blob, GOLDEN_DS35Q1GA, sizeof(blob));
-  blob[3] = 2;                                // a newer schema: never guess its length
+  blob[3] = NAND_PROFILE_SCHEMA_VER + 1;     // a newer schema: never guess its length
   push(blob);
   TEST_ASSERT_EQUAL_INT(NAND_SESS_CLOSE, run());
   TEST_ASSERT_EQUAL_UINT8(NAND_PRF_E_SCHEMA_VER, next_resp().status);
@@ -264,6 +268,57 @@ void test_new_connection_forgets_the_stage(void) {
   TEST_ASSERT_FALSE(S.has_staged);
 }
 
+// ---- SPI NOR (session v2) ------------------------------------------------------------
+static void socket_holds_w25q128(void) {
+  S.id[0] = 0x40; S.id[1] = 0x18; S.id[2] = 0xEF;      // NAND-style read of a NOR part
+  S.nor_id[0] = 0xEF; S.nor_id[1] = 0x40; S.nor_id[2] = 0x18;
+}
+
+void test_info_v2_carries_nor_id_and_family(void) {
+  socket_holds_w25q128();
+  feed("I", 1);
+  run();
+  resp_t r = next_resp();
+  TEST_ASSERT_EQUAL_UINT16(38, r.len);
+  TEST_ASSERT_EQUAL_UINT8(2, r.payload[0]);                   // session v2
+  TEST_ASSERT_EQUAL_HEX8(0xEF, r.payload[34]);
+  TEST_ASSERT_EQUAL_HEX8(0x40, r.payload[35]);
+  TEST_ASSERT_EQUAL_HEX8(0x18, r.payload[36]);
+  TEST_ASSERT_EQUAL_UINT8(CHIP_FAMILY_SPI_NAND, r.payload[37]);   // manual NAND active
+}
+
+void test_nor_push_is_checked_against_the_nor_id(void) {
+  socket_holds_w25q128();
+  push(GOLDEN_W25Q128_V);
+  feed("A", 1); feed_u32(blob_crc(GOLDEN_W25Q128_V));
+  TEST_ASSERT_EQUAL_INT(NAND_SESS_ARMED, run());
+  resp_t p = next_resp();
+  TEST_ASSERT_EQUAL_UINT8(NAND_PRF_OK, p.status);
+  TEST_ASSERT_EQUAL_UINT16(NAND_ECHO_SIZE, p.len);
+  TEST_ASSERT_EQUAL_HEX8(0xEF, p.payload[45]);                // detected, NOR view
+  TEST_ASSERT_EQUAL_HEX8(0x18, p.payload[47]);
+  TEST_ASSERT_EQUAL_UINT8(CHIP_FAMILY_SPI_NOR, p.payload[52]);
+  TEST_ASSERT_EQUAL_UINT8(NAND_PRF_OK, next_resp().status);   // ARM
+  TEST_ASSERT_EQUAL_UINT8(CHIP_FAMILY_SPI_NOR, S.armed.family);
+}
+
+void test_nor_profile_for_a_nand_socket_is_refused(void) {
+  push(GOLDEN_W25Q128_V);                                     // DS35 in the socket
+  run();
+  resp_t r = next_resp();
+  TEST_ASSERT_EQUAL_UINT8(NAND_PRF_E_ID_MISMATCH, r.status);
+  TEST_ASSERT_EQUAL_HEX8(0xFF, r.payload[45]);                // the NOR view it compared
+  TEST_ASSERT_FALSE(S.has_staged);
+}
+
+void test_nor_capacity_byte_must_match(void) {
+  socket_holds_w25q128();
+  S.nor_id[2] = 0x19;                                         // a W25Q256 in the socket
+  push(GOLDEN_W25Q128_V);
+  run();
+  TEST_ASSERT_EQUAL_UINT8(NAND_PRF_E_ID_MISMATCH, next_resp().status);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_bare_go_still_dumps);
@@ -280,5 +335,9 @@ int main(int, char **) {
   RUN_TEST(test_truncated_push_times_out_and_closes);
   RUN_TEST(test_unknown_command_is_answered);
   RUN_TEST(test_new_connection_forgets_the_stage);
+  RUN_TEST(test_info_v2_carries_nor_id_and_family);
+  RUN_TEST(test_nor_push_is_checked_against_the_nor_id);
+  RUN_TEST(test_nor_profile_for_a_nand_socket_is_refused);
+  RUN_TEST(test_nor_capacity_byte_must_match);
   return UNITY_END();
 }

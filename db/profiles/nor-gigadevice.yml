@@ -1,0 +1,5 @@
+# GigaDevice GD25Q: QE is status register 2 bit 1 (S9), read with 35h (JESD216 QER 101b).
+# The firmware only reads the QE bit (to explain a failed quad self-test); it
+# never sets it, because on most parts that is a non-volatile status write.
+nor-gigadevice:
+  qer: 5

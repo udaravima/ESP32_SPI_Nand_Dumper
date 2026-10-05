@@ -38,9 +38,55 @@ static bool regions_ok(const uint16_t *regs, uint8_t n, uint32_t spare) {
   return true;
 }
 
+static bool all_zero(const void *v, size_t n) {
+  const uint8_t *b = (const uint8_t *)v;
+  for (size_t i = 0; i < n; i++)
+    if (b[i]) return false;
+  return true;
+}
+
+// SPI NOR branch of nand_profile_check. Mirrors chipdb._check_nor().
+static nand_prf_err_t check_nor(const active_profile_t *p, uint32_t max_page_size) {
+  // Tier 2: every NAND-only field is zero, so a NOR profile can't half-drive
+  // the NAND read path (and vice versa below).
+  if (p->op_page_read || p->op_status_addr || p->op_cfg_addr || p->ecc_en_bit ||
+      p->ecc_shift || p->ecc_mask || !all_zero(p->ecc_map, sizeof(p->ecc_map)) ||
+      p->status2_reg || p->qe_addr || p->qe_bit || p->planes != 1 ||
+      p->bbm_off || p->bbm_len || p->bbm_good || p->bbm_pages ||
+      p->oob_free_n || p->oob_ecc_n || !all_zero(p->oob_free, sizeof(p->oob_free)) ||
+      !all_zero(p->oob_ecc, sizeof(p->oob_ecc)))
+    return NAND_PRF_E_STRUCTURE;
+  if (!p->op_read_cache || !p->op_read_cache_x4 || !p->op_get_feat || !p->op_set_feat)
+    return NAND_PRF_E_STRUCTURE;
+  if (p->read_mode > NAND_READ_QUAD) return NAND_PRF_E_STRUCTURE;
+  if (p->id_method != NAND_ID_METHOD_NONE || p->id_n_bytes != 3) return NAND_PRF_E_STRUCTURE;
+  if (p->addr_bytes != 3 && p->addr_bytes != 4) return NAND_PRF_E_STRUCTURE;
+  if (p->addr4_mode > NOR_ADDR4_ENTER_WREN) return NAND_PRF_E_STRUCTURE;
+  if ((p->addr_bytes == 4) != (p->addr4_mode != NOR_ADDR4_NONE)) return NAND_PRF_E_STRUCTURE;
+  if (p->dummy_x1 > NOR_MAX_DUMMY || p->dummy_x4 > NOR_MAX_DUMMY) return NAND_PRF_E_STRUCTURE;
+  if (p->qer > NOR_QER_MAX) return NAND_PRF_E_STRUCTURE;
+
+  // Tier 3: a linear array read in power-of-two frames, no spare area.
+  uint32_t page = p->page_size, ppb = p->pages_per_block;
+  if (p->spare_size != 0) return NAND_PRF_E_GEOMETRY;
+  if (page == 0 || (page & (page - 1))) return NAND_PRF_E_GEOMETRY;
+  if (ppb == 0 || (ppb & (ppb - 1)) || p->total_blocks == 0) return NAND_PRF_E_GEOMETRY;
+  uint64_t size = (uint64_t)page * ppb * p->total_blocks;
+  if (size >= (1ull << 32)) return NAND_PRF_E_GEOMETRY;
+  // A 3-byte address reaches 16 MiB; above that the read would wrap silently.
+  if (size > (1ull << 24) && p->addr_bytes != 4) return NAND_PRF_E_GEOMETRY;
+  if (page > max_page_size) return NAND_PRF_E_PAGE_TOO_BIG;
+  return NAND_PRF_OK;
+}
+
 nand_prf_err_t nand_profile_check(const active_profile_t *p, uint32_t max_page_size) {
   // Tier 2: structural. Mirrors chipdb.check_flat().
   if (memchr(p->name, '\0', sizeof(p->name)) == NULL) return NAND_PRF_E_STRUCTURE;
+  if (!all_zero(p->_pad1, sizeof(p->_pad1))) return NAND_PRF_E_STRUCTURE;
+  if (p->family == CHIP_FAMILY_SPI_NOR) return check_nor(p, max_page_size);
+  if (p->family != CHIP_FAMILY_SPI_NAND) return NAND_PRF_E_STRUCTURE;
+  if (p->addr_bytes || p->addr4_mode || p->dummy_x1 || p->dummy_x4 || p->qer)
+    return NAND_PRF_E_STRUCTURE;
   if (p->ecc_shift > 7) return NAND_PRF_E_STRUCTURE;
   if (p->ecc_mask != 0x1 && p->ecc_mask != 0x3 && p->ecc_mask != 0x7 && p->ecc_mask != 0xF)
     return NAND_PRF_E_STRUCTURE;
@@ -94,24 +140,34 @@ bool nand_profile_id_matches(const active_profile_t *p, uint8_t mfr, uint8_t dev
   return !(p->id_flags & NAND_PROFILE_ID_HAS_DEV2) || p->id_dev2 == dev2;
 }
 
+const active_profile_t *nand_profile_find_family(const active_profile_t *table, unsigned n,
+                                                 uint8_t family, uint8_t mfr, uint8_t dev,
+                                                 uint8_t dev2, nand_prf_err_t *err) {
+  // A candidate shares (mfr, dev) and, if it declares dev2, matches it too: a
+  // chip whose dev2 differs is a different chip (a W25Q256 is not a W25Q128).
+  const active_profile_t *any = NULL, *by_dev2 = NULL;
+  unsigned n_any = 0, n_dev2 = 0;
+  for (unsigned i = 0; i < n; i++) {
+    const active_profile_t *t = &table[i];
+    if (family != CHIP_FAMILY_ANY && t->family != family) continue;
+    if (t->id_mfr != mfr || t->id_dev != dev) continue;
+    bool has_dev2 = t->id_flags & NAND_PROFILE_ID_HAS_DEV2;
+    if (has_dev2 && t->id_dev2 != dev2) continue;
+    any = t; n_any++;
+    if (has_dev2) { by_dev2 = t; n_dev2++; }
+  }
+  if (n_any == 0) { if (err) *err = NAND_PRF_E_UNKNOWN_ID; return NULL; }
+  if (n_any == 1) { if (err) *err = NAND_PRF_OK; return any; }
+  // Several share (mfr, dev): only one declared, matching dev2 decides.
+  if (n_dev2 == 1) { if (err) *err = NAND_PRF_OK; return by_dev2; }
+  if (err) *err = NAND_PRF_E_AMBIGUOUS_ID;
+  return NULL;
+}
+
 const active_profile_t *nand_profile_find(const active_profile_t *table, unsigned n,
                                           uint8_t mfr, uint8_t dev, uint8_t dev2,
                                           nand_prf_err_t *err) {
-  const active_profile_t *hit = NULL;
-  unsigned by_id = 0, by_dev2 = 0;
-  for (unsigned i = 0; i < n; i++)
-    if (table[i].id_mfr == mfr && table[i].id_dev == dev) by_id++;
-  for (unsigned i = 0; i < n; i++) {
-    const active_profile_t *t = &table[i];
-    if (t->id_mfr != mfr || t->id_dev != dev) continue;
-    if (by_id == 1) { hit = t; break; }
-    // Several chips share (mfr, dev): only a declared, matching dev2 decides.
-    if ((t->id_flags & NAND_PROFILE_ID_HAS_DEV2) && t->id_dev2 == dev2) { hit = t; by_dev2++; }
-  }
-  if (by_id == 0) { if (err) *err = NAND_PRF_E_UNKNOWN_ID; return NULL; }
-  if (by_id > 1 && by_dev2 != 1) { if (err) *err = NAND_PRF_E_AMBIGUOUS_ID; return NULL; }
-  if (err) *err = NAND_PRF_OK;
-  return hit;
+  return nand_profile_find_family(table, n, CHIP_FAMILY_ANY, mfr, dev, dev2, err);
 }
 
 const active_profile_t *nand_profile_pick(const active_profile_t *table, unsigned n,
@@ -148,6 +204,25 @@ void nand_profile_manual(active_profile_t *p, uint32_t page_size, uint32_t spare
   p->read_mode = NAND_READ_SINGLE; p->planes = planes ? planes : 1;
   p->vcc_mv = 3300;
   p->bbm_off = 0; p->bbm_len = 1; p->bbm_good = 0xFF; p->bbm_pages = NAND_BBM_PAGE_FIRST;
+}
+
+void nand_profile_manual_nor(active_profile_t *p, uint32_t size_bytes) {
+  // spi-nor family defaults (db/families/spi-nor.yml).
+  memset(p, 0, sizeof(*p));
+  strncpy(p->name, "MANUAL-NOR", sizeof(p->name) - 1);
+  p->family = CHIP_FAMILY_SPI_NOR;
+  p->page_size = size_bytes < 4096 ? size_bytes : 4096;
+  p->spare_size = 0;
+  uint32_t units = p->page_size ? size_bytes / p->page_size : 0;
+  p->pages_per_block = units < 16 ? (units ? units : 1) : 16;
+  p->total_blocks = size_bytes / (p->page_size * p->pages_per_block);
+  p->op_read_cache = 0x03; p->op_read_cache_x4 = 0x6B;
+  p->op_get_feat = 0x05; p->op_set_feat = 0x01;
+  p->id_method = NAND_ID_METHOD_NONE; p->id_n_bytes = 3;
+  p->read_mode = NAND_READ_SINGLE; p->planes = 1; p->vcc_mv = 3300;
+  p->addr_bytes = size_bytes > (1u << 24) ? 4 : 3;
+  p->addr4_mode = p->addr_bytes == 4 ? NOR_ADDR4_ENTER : NOR_ADDR4_NONE;
+  p->dummy_x1 = 0; p->dummy_x4 = 8;
 }
 
 bool nand_profile_is_bbm_page(const active_profile_t *p, uint32_t page_in_block,

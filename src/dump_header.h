@@ -8,6 +8,8 @@
 #define DUMP_FLAG_QUAD     0x02
 #define DUMP_FLAG_VERIFY   0x04
 #define DUMP_FLAG_PAGECRC  0x08   // v2: each page is followed by a 4-byte CRC32 seal
+#define DUMP_FLAG_NOR      0x10   // SPI NOR: pages are 4 KiB read units, spare_size 0,
+                                  // mfr/dev are the plain 9Fh ID's first two bytes
 
 typedef struct {
   uint16_t page_size, spare_size, pages_per_block, total_blocks;

@@ -1,0 +1,5 @@
+# Any SPI NOR vendor without a profile of its own. No QE bit location is
+# assumed (JESD216 QER 000b); a quad read is still allowed and the quad
+# self-test decides whether it works.
+nor-generic:
+  qer: 0

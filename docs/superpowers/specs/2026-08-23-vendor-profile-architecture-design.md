@@ -15,7 +15,8 @@
   PR #1), `op_read_cache_x4` (quad → single fallback needs both opcodes), and
   `bbm_pages` (bitmask for `bbm.pages`). YAML `bbm` keys are `offset`/`length`,
   because a bare `off` parses as a YAML 1.1 boolean. Authoritative layout: the
-  `LAYOUT` table in `tools/chipdb.py` (120 bytes, naturally aligned).
+  `LAYOUT` table in `tools/chipdb.py` (120 bytes, naturally aligned; 128 bytes
+  from schema v2, see `2026-10-05-spi-nor-design.md`).
 - **Stage 3 notes** (2026-10-05): the arm is bound to the staged blob — `A`
   carries the blob's CRC32, and a mismatch disarms. Replies are `NRSP` frames
   (wire format in `docs/DEVELOPER_GUIDE.md`); a `G` while a push is unarmed is

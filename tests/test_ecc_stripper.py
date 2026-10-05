@@ -138,3 +138,13 @@ def test_main_unknown_profile_flag_fails(tmp_path):
     _dump_with_marker(inp, 2112, 64, 4, 1, {})
     with pytest.raises(SystemExit):
         ecc_stripper.main([inp, out, "--profile", "NOPE"])
+
+
+def test_main_nor_dump_is_copied_unchanged(tmp_path, capsys):
+    inp, out = str(tmp_path / "raw.bin"), str(tmp_path / "clean.bin")
+    data = bytes(range(256)) * 64
+    with open(inp, "wb") as f:
+        f.write(data)
+    ecc_stripper.main([inp, out, "--profile", "W25Q128.V"])
+    assert open(out, "rb").read() == data
+    assert "No spare area" in capsys.readouterr().out

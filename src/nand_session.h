@@ -32,12 +32,12 @@
 // Pure and Arduino-free: the transport is two callbacks, so the native tests
 // drive the whole session from a byte buffer.
 
-#define NAND_SESSION_VER      1
+#define NAND_SESSION_VER      2      // v2: SPI NOR ID view + family in I/P replies
 #define NAND_RESP_MAGIC       "NRSP"
 #define NAND_RESP_HDR_SIZE    8      // magic + cmd + status + len
 #define NAND_RESP_MAX_PAYLOAD 64
-#define NAND_INFO_SIZE        34
-#define NAND_ECHO_SIZE        52
+#define NAND_INFO_SIZE        38     // v1 was 34: + nor_id[3], active family
+#define NAND_ECHO_SIZE        53     // v1 was 52: + profile family
 
 #define NAND_CMD_INFO 'I'
 #define NAND_CMD_PUSH 'P'
@@ -50,6 +50,7 @@ typedef enum {
   NAND_CHIP_UNKNOWN   = 1,   // no match: running on manual menu geometry
   NAND_CHIP_AMBIGUOUS = 2,   // several resident matches: manual geometry until a push
   NAND_CHIP_PUSHED    = 3,   // a host-pushed profile was armed
+  NAND_CHIP_SFDP      = 4,   // SPI NOR not in the table, profile built from its SFDP
 } nand_chip_state_t;
 
 typedef struct {
@@ -62,7 +63,8 @@ typedef struct {
 
 typedef struct {
   // Set by the caller.
-  uint8_t  id[3];                     // mfr, dev, dev2 as read from 9Fh
+  uint8_t  id[3];                     // mfr, dev, dev2: 9Fh + dummy byte (SPI NAND view)
+  uint8_t  nor_id[3];                 // mfr, type, capacity: plain 9Fh (SPI NOR view)
   nand_chip_state_t chip_state;
   const active_profile_t *active;     // the profile the read path runs on now
   uint32_t max_page_size;             // the firmware's page buffer bound

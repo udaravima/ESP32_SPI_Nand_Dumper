@@ -7,6 +7,16 @@ follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **SPI NOR flash.** The dumper now reads SPI NOR chips as well as SPI NAND,
+  with the same wiring and tools. The family is detected from how the chip
+  answers read-ID (a match in both families is refused, not guessed). 366
+  chips are imported from flashrom's chip tables (186 compiled in), a chip in
+  neither list is read from its own SFDP table, and parts above 16 MiB use
+  4-byte addressing. The firmware stays read-only: it never writes a NOR
+  status register, so quad reads are used only when the chip's QE bit is
+  already set. The profile grows to 128 bytes (schema v2) and the command
+  session to v2 (`I` also reports the NOR ID view and the family); `dump.py`
+  still talks to v1 firmware.
 - **Standalone pick for shared chip IDs.** When several resident chips share a
   JEDEC ID, the serial menu offers **[C] Choose chip**; the choice is saved in
   NVS and reused on boot, but only for the same ID and only while that chip is

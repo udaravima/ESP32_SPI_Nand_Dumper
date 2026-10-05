@@ -8,6 +8,7 @@
 #include "board_pins.h"
 
 #define NAND_STATUS_OIP          0x01
+#define NAND_READY_TIMEOUT_MS    100
 
 typedef struct {
   int pin_clk, pin_d0, pin_d1, pin_d2, pin_d3, pin_cs;
@@ -26,7 +27,7 @@ esp_err_t nand_set_clock(int clock_hz);       // re-clock the device post-detect
 // profile. Until called, the spi-nand family defaults are used (for READ ID).
 void      nand_apply_profile(const active_profile_t *p);
 void      nand_reset(void);
-void      nand_wait_ready(void);
+bool      nand_wait_ready(void);              // false: OIP never cleared (not a SPI NAND?)
 uint8_t   nand_get_feature(uint8_t addr);
 void      nand_set_feature(uint8_t addr, uint8_t value);
 void      nand_set_ecc(bool on);
@@ -46,6 +47,10 @@ bool      nand_quad_selftest(uint32_t probe_row, int page_size);
 // Pages recovered by the single fallback since the read mode was last set.
 uint32_t  nand_quad_fallbacks(void);
 nand_read_mode_t nand_get_read_mode(void);
+// One raw transaction on the shared bus, with an optional dummy phase (the
+// SPI NOR driver's transport; see nor_driver.h).
+void      nand_spi_xfer(uint8_t cmd, uint32_t addr, uint8_t addr_bits, uint8_t dummy_bits,
+                        uint8_t *rx, int rx_len, bool quad);
 void      nand_set_read_mode(nand_read_mode_t m);
 
 #endif // NAND_DRIVER_H

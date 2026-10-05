@@ -13,6 +13,7 @@ firmware or add a chip, see the [Developer Guide](DEVELOPER_GUIDE.md).
 - [The config menu](#the-config-menu)
 - [ECC: raw vs corrected](#ecc-raw-vs-corrected)
 - [Read modes: single and quad](#read-modes-single-and-quad)
+- [SPI NOR chips](#spi-nor-chips)
 - [Running a dump](#running-a-dump)
 - [The metadata sidecar](#the-metadata-sidecar)
 - [Post-processing](#post-processing)
@@ -22,7 +23,7 @@ firmware or add a chip, see the [Developer Guide](DEVELOPER_GUIDE.md).
 
 ## What this tool does
 
-It reads a SPI NAND flash chip page by page and streams the raw contents over
+It reads a SPI NAND or SPI NOR flash chip page by page and streams the raw contents over
 WiFi/TCP to your PC. It **auto-detects** the chip from its JEDEC ID, so geometry
 (page size, block count, spare size) is filled in for you. The raw stream
 includes each page's spare/OOB area; a post-processing step strips that to a
@@ -172,6 +173,31 @@ via quad and via single and compares them. If they differ (bad wiring, or a chip
 whose quad path isn't supported), it prints a warning and **falls back to single
 x1** automatically. So selecting quad can never silently corrupt a dump — worst
 case it quietly runs single.
+
+## SPI NOR chips
+
+The same board and wiring read SPI NOR flash (W25Q, MX25L, GD25Q and the many
+other 8-pin "25-series" parts). The firmware tells the two families apart from
+how the chip answers the read-ID command, so there is nothing to select for a
+known chip. What differs for NOR:
+
+- There is no spare area and no on-die ECC, so **[E]** and the bad-block marker
+  do not apply, and the raw dump already is the flash image. `ecc_stripper.py`
+  just copies it.
+- The dump is sent in 4 KiB units; the header's flag bit 4 marks a NOR dump and
+  `dump.py` names the file `nor_raw_dump_<time>.bin`.
+- Chips above 16 MiB are read with 4-byte addresses. Parts that use the `B7h`
+  mode switch are put back into 3-byte mode when the dump ends.
+- A chip that is neither in the firmware nor in `db/` can still be dumped if it
+  carries an SFDP table (most parts since about 2011): the firmware reads its
+  size and read commands from the chip itself and shows it as `SFDP-XXYYZZ`.
+- Otherwise the menu shows **[F] Family** to switch an unknown chip to NOR and
+  **[8] Size** to enter its size in KiB.
+- Quad reads need the chip's QE bit, which the firmware never writes. If QE is
+  clear the menu says so and the dump runs single; WiFi limits the speed
+  anyway.
+- 1.8 V NOR parts (`...W` suffixes such as W25Q128JW) need a level shifter, as
+  with NAND. The firmware warns when the profile says so.
 
 ## Running a dump
 

@@ -1,6 +1,9 @@
 #include <Arduino.h>
 #include "nand_driver.h"
+#include "nor_driver.h"
 #include "nand_profile.h"
+#include "chip_detect.h"
+#include "sfdp.h"
 #include "nand_session.h"
 #include "nand_addr.h"
 #include "dump_header.h"
@@ -32,11 +35,16 @@ static int      cfg_pages_per_block = 64;
 static int      cfg_total_blocks    = 2048;
 static int      cfg_page_addr_bits  = 6;
 static int      cfg_planes          = 1;   // 2 on multi-plane parts (MT29F2G01)
-static bool     cfg_ecc_on          = false;   // global policy: OFF/raw
+static bool     cfg_ecc_on          = false;   // global policy: OFF/raw (SPI NAND only)
+// An unknown chip's family and, for SPI NOR, its size (menu [F] / [8]).
+static uint8_t  cfg_family          = CHIP_FAMILY_SPI_NAND;
+static uint32_t cfg_nor_size        = 1u << 20;
 // Detected chip. g_active is the one flat profile the read path runs against:
 // a copy of the resident entry for a known chip, a host-pushed profile once
 // one is armed, or a manual profile built from the menu geometry otherwise.
-static uint8_t  g_id[3] = {0, 0, 0};           // mfr, dev, dev2 as read from 9Fh
+static uint8_t  g_id[3] = {0, 0, 0};           // mfr, dev, dev2: 9Fh + dummy (SPI NAND view)
+static uint8_t  g_nor_id[3] = {0, 0, 0};       // mfr, type, capacity: plain 9Fh (SPI NOR view)
+static uint8_t  g_detect_family = CHIP_FAMILY_SPI_NAND;   // family of a shared-ID match
 static bool     g_known = false;               // g_active came from the table or a push
 static nand_chip_state_t g_chip_state = NAND_CHIP_UNKNOWN;
 static active_profile_t g_active;
@@ -48,14 +56,36 @@ void apply_runtime_settings();
 static void adopt_profile(const active_profile_t *p, nand_chip_state_t state);
 String read_serial_line();
 
-// Resident chips that share the detected (mfr, dev). More than one means the
-// ID alone can't say which part this is (design § 5).
+static bool is_nor() { return g_active.family == CHIP_FAMILY_SPI_NOR; }
+
+// The detected ID as a chip of `family` reports it.
+static const uint8_t *id_view(uint8_t family) {
+  return family == CHIP_FAMILY_SPI_NOR ? g_nor_id : g_id;
+}
+
+// Could resident entry `t` be the chip in the socket? Same family view of
+// (mfr, dev), and the same dev2 if the entry declares one.
+static bool is_candidate(const active_profile_t *t) {
+  if (t->family != g_detect_family) return false;
+  const uint8_t *id = id_view(t->family);
+  if (t->id_mfr != id[0] || t->id_dev != id[1]) return false;
+  return !(t->id_flags & NAND_PROFILE_ID_HAS_DEV2) || t->id_dev2 == id[2];
+}
+
+// Resident chips that share the detected ID. More than one means the ID alone
+// can't say which part this is (design § 5).
 static unsigned id_candidates() {
   unsigned n, c = 0;
   const active_profile_t *t = nand_profile_resident(&n);
   for (unsigned i = 0; i < n; i++)
-    if (t[i].id_mfr == g_id[0] && t[i].id_dev == g_id[1]) c++;
+    if (is_candidate(&t[i])) c++;
   return c;
+}
+
+// SPI NOR manual size from the JEDEC capacity byte, where it follows the
+// common 2^n convention (Winbond, Macronix, GigaDevice: 0x18 = 16 MiB).
+static uint32_t nor_size_from_id(uint8_t cap) {
+  return cap >= 0x10 && cap <= 0x1C ? 1u << cap : 1u << 20;
 }
 
 // Standalone tiebreak: list the resident chips sharing this ID, take the
@@ -66,7 +96,7 @@ static void choose_chip() {
   const active_profile_t *cand[16];
   unsigned k = 0;
   for (unsigned i = 0; i < n && k < 16; i++)
-    if (t[i].id_mfr == g_id[0] && t[i].id_dev == g_id[1]) {
+    if (is_candidate(&t[i])) {
       cand[k] = &t[i];
       Serial.printf("    [%u] %s: %u blocks x %u pages x %u B, %u plane(s)\n", k + 1,
                     cand[k]->name, (unsigned)cand[k]->total_blocks,
@@ -83,7 +113,7 @@ static void choose_chip() {
   adopt_profile(cand[q - 1], NAND_CHIP_RESIDENT);
   cfg_read_mode = (nand_read_mode_t)g_active.read_mode;
   nand_chip_choice_t ch = {};
-  ch.mfr = g_id[0]; ch.dev = g_id[1];
+  ch.mfr = id_view(g_active.family)[0]; ch.dev = id_view(g_active.family)[1];
   strncpy(ch.name, g_active.name, sizeof(ch.name) - 1);
   config_save_chip_choice(&ch);
   Serial.printf("  Chip: %s (saved for this ID)\n", g_active.name);
@@ -145,13 +175,20 @@ void show_menu() {
 
   Serial.println();
   Serial.println("========================================");
-  Serial.println("  ESP32 SPI NAND Dumper v3.1.1 — Config");
+  Serial.println("  ESP32 SPI Flash Dumper v3.1.1 — Config");
   Serial.println("========================================");
-  if (g_known) Serial.printf("  Detected: %s (0x%02X 0x%02X)%s\n",
-                             g_active.name, g_id[0], g_id[1],
-                             g_chip_state == NAND_CHIP_PUSHED ? " — pushed by host" : "");
-  else         Serial.printf("  Detected: UNKNOWN (0x%02X 0x%02X) — manual geometry\n",
-                             g_id[0], g_id[1]);
+  const uint8_t *id = id_view(g_known ? g_active.family : cfg_family);
+  const char *fam = (g_known ? g_active.family : cfg_family) == CHIP_FAMILY_SPI_NOR
+                        ? "SPI NOR" : "SPI NAND";
+  if (g_known) Serial.printf("  Detected: %s %s (0x%02X 0x%02X 0x%02X)%s\n", fam,
+                             g_active.name, id[0], id[1], id[2],
+                             g_chip_state == NAND_CHIP_PUSHED ? " — pushed by host"
+                             : g_chip_state == NAND_CHIP_SFDP ? " — from its SFDP table" : "");
+  else         Serial.printf("  Detected: UNKNOWN (NAND view 0x%02X 0x%02X, NOR view 0x%02X 0x%02X 0x%02X)"
+                             " — manual %s geometry\n",
+                             g_id[0], g_id[1], g_nor_id[0], g_nor_id[1], g_nor_id[2], fam);
+  if (!g_known)
+    Serial.printf("  [F] Family:          %s (unknown chip; toggles NAND/NOR)\n", fam);
   if (id_candidates() > 1)
     Serial.printf("  [C] Choose chip:     %u resident chips share this ID\n", id_candidates());
   Serial.println("  -- Network --");
@@ -166,12 +203,23 @@ void show_menu() {
   Serial.printf( "  [7] Max Retries:     %d\n", cfg_max_retries);
   Serial.printf( "  [B] Batch pages/write: %d %s\n", cfg_batch_pages,
                  cfg_batch_pages == 1 ? "(per-page)" : "(coalesced)");
-  Serial.printf( "  [E] ECC on read:     %s\n", cfg_ecc_on ? "ON (corrected)" : "OFF (raw)");
-  Serial.println("  -- NAND Geometry --");
-  Serial.printf( "  [8] Page Size:       %d bytes (spare %d)\n", cfg_page_size, cfg_spare_size);
-  Serial.printf( "  [9] Pages/Block:     %d\n", cfg_pages_per_block);
-  Serial.printf( "  [0] Total Blocks:    %d\n", cfg_total_blocks);
-  Serial.printf( "       Total:          %d pages, %.1f MB\n", total_pages, total_mb);
+  bool nor = g_known ? is_nor() : cfg_family == CHIP_FAMILY_SPI_NOR;
+  if (nor) {
+    Serial.println("  [E] ECC on read:     n/a (SPI NOR has no on-die ECC)");
+    Serial.println("  -- NOR Geometry --");
+    if (g_known)
+      Serial.printf("       Size:           %.2f MB, %u-byte address\n",
+                    nand_profile_bytes(&g_active) / (1024.0 * 1024.0), g_active.addr_bytes);
+    else
+      Serial.printf("  [8] Size:            %u KiB\n", (unsigned)(cfg_nor_size >> 10));
+  } else {
+    Serial.printf( "  [E] ECC on read:     %s\n", cfg_ecc_on ? "ON (corrected)" : "OFF (raw)");
+    Serial.println("  -- NAND Geometry --");
+    Serial.printf( "  [8] Page Size:       %d bytes (spare %d)\n", cfg_page_size, cfg_spare_size);
+    Serial.printf( "  [9] Pages/Block:     %d\n", cfg_pages_per_block);
+    Serial.printf( "  [0] Total Blocks:    %d\n", cfg_total_blocks);
+    Serial.printf( "       Total:          %d pages, %.1f MB\n", total_pages, total_mb);
+  }
   Serial.println("  ----------------------------------------");
   Serial.println("  [S] START dump with above settings");
   Serial.println("========================================");
@@ -189,7 +237,27 @@ void config_menu() {
 
     if (choice == 'S') { Serial.println("[*] Starting with current settings..."); return; }
 
+    // SPI NOR: no ECC, and geometry is one size (from the profile when known).
+    bool nor = g_known ? is_nor() : cfg_family == CHIP_FAMILY_SPI_NOR;
+    if (nor && (choice == 'E' || choice == '9' || choice == '0' || (choice == '8' && g_known))) {
+      Serial.println("  [!] Not applicable to this SPI NOR chip");
+      show_menu();
+      continue;
+    }
+    if (nor && choice == '8') {
+      Serial.print("  Enter size in KiB (power of 2, 64-262144): ");
+      int q = read_serial_line().toInt();
+      if (q >= 64 && q <= 262144 && (q & (q - 1)) == 0) cfg_nor_size = (uint32_t)q << 10;
+      else Serial.println("  [!] Invalid");
+      show_menu();
+      continue;
+    }
+
     switch (choice) {
+      case 'F':
+        if (g_known) { Serial.println("  [!] The chip was identified; family is fixed"); break; }
+        cfg_family = cfg_family == CHIP_FAMILY_SPI_NOR ? CHIP_FAMILY_SPI_NAND : CHIP_FAMILY_SPI_NOR;
+        break;
       case 'C':
         if (id_candidates() > 1) choose_chip();
         else Serial.println("  [!] Only one chip matches this ID");
@@ -294,6 +362,35 @@ void config_menu() {
   }
 }
 
+// SPI NOR half of apply_runtime_settings: opcodes/address width from the
+// profile, then the quad self-test. The firmware never sets the QE bit (on
+// most parts it is a non-volatile status write); it only reads it to explain
+// a failed self-test.
+static void apply_nor_settings() {
+  cfg_ecc_on = false;
+  nor_apply_profile(&g_active);
+  nor_set_read_mode(cfg_read_mode);
+  if (cfg_read_mode == NAND_READ_QUAD) {
+    int qe = nor_qe_state();
+    uint32_t probe = nand_profile_bytes(&g_active) > 2 * (uint32_t)cfg_page_size
+                         ? (uint32_t)cfg_page_size : 0;
+    if (!nor_quad_selftest(probe, cfg_page_size)) {
+      Serial.printf("[!] Quad self-test FAILED%s — falling back to single x1\n",
+                    qe == 0 ? " (QE bit is clear; this read-only build never sets it)" : "");
+      cfg_read_mode = NAND_READ_SINGLE;
+      nor_set_read_mode(NAND_READ_SINGLE);
+    } else {
+      Serial.println("[+] Quad self-test passed");
+    }
+  }
+  static const char *addr4[] = {"", ", 4-byte opcodes", ", B7h 4-byte mode",
+                                ", WREN+B7h 4-byte mode"};
+  Serial.printf("[*] SPI NOR %s: %.2f MB, %u-byte address%s | Read: %s | Clock: %d Hz\n",
+                g_active.name, nand_profile_bytes(&g_active) / (1024.0 * 1024.0),
+                g_active.addr_bytes, addr4[g_active.addr4_mode & 3],
+                cfg_read_mode == NAND_READ_QUAD ? "Quad x4" : "Single x1", cfg_spi_clock_hz);
+}
+
 // Apply the user's SPI clock, read mode, and ECC to the chip, and (if quad is
 // selected) run the quad self-test with fallback. Called after the initial menu
 // and after every [M] reconfigure. The chip retains these settings across
@@ -308,9 +405,18 @@ void apply_runtime_settings() {
     Serial.printf("[!] SPI clock change failed (%d) — staying at init speed\n", clk_ret);
 
   // An unknown chip runs on a manual profile that follows the menu geometry.
-  if (!g_known)
-    nand_profile_manual(&g_active, cfg_page_size, cfg_spare_size, cfg_pages_per_block,
-                        cfg_total_blocks, cfg_planes);
+  if (!g_known) {
+    if (cfg_family == CHIP_FAMILY_SPI_NOR) {
+      nand_profile_manual_nor(&g_active, cfg_nor_size);
+      cfg_page_size = g_active.page_size; cfg_spare_size = 0;
+      cfg_pages_per_block = g_active.pages_per_block; cfg_total_blocks = g_active.total_blocks;
+      cfg_page_addr_bits = log2_int(cfg_pages_per_block); cfg_planes = 1;
+    } else {
+      nand_profile_manual(&g_active, cfg_page_size, cfg_spare_size, cfg_pages_per_block,
+                          cfg_total_blocks, cfg_planes);
+    }
+  }
+  if (is_nor()) { apply_nor_settings(); return; }
   nand_apply_profile(&g_active);
 
   nand_set_read_mode(cfg_read_mode);
@@ -405,6 +511,10 @@ static void adopt_profile(const active_profile_t *p, nand_chip_state_t state) {
   cfg_total_blocks    = g_active.total_blocks;
   cfg_page_addr_bits  = log2_int(g_active.pages_per_block);
   cfg_planes          = g_active.planes;
+  if (g_active.family == CHIP_FAMILY_SPI_NOR) cfg_ecc_on = false;
+  if (g_active.vcc_mv && g_active.vcc_mv < 3000)
+    Serial.printf("[!] %s is a %u mV part: the ESP32 drives 3.3 V. Use a level shifter.\n",
+                  g_active.name, g_active.vcc_mv);
 }
 
 static size_t link_read(void *, uint8_t *buf, size_t n, uint32_t timeout_ms) {
@@ -421,6 +531,7 @@ static void serve_session() {
   g_session.max_page_size = MAX_PAGE_SIZE;
   g_session.timeout_ms = SESSION_PAYLOAD_MS;
   memcpy(g_session.id, g_id, sizeof(g_id));
+  memcpy(g_session.nor_id, g_nor_id, sizeof(g_nor_id));
   nand_session_begin(&g_session);
   Serial.println("[*] Client connected; waiting for a command...");
 
@@ -441,8 +552,8 @@ static void serve_session() {
         break;
       case NAND_SESS_ARMED:
         adopt_profile(&g_session.armed, NAND_CHIP_PUSHED);
-        Serial.printf("[+] Armed pushed profile %s (0x%02X 0x%02X)\n",
-                      g_active.name, g_id[0], g_id[1]);
+        Serial.printf("[+] Armed pushed profile %s (0x%02X 0x%02X)\n", g_active.name,
+                      id_view(g_active.family)[0], id_view(g_active.family)[1]);
         apply_runtime_settings();
         break;
       case NAND_SESS_GO:
@@ -479,38 +590,65 @@ void setup() {
     Serial.println("[!] NAND init failed"); return;
   }
 
-  // Resolve the ID in the resident table compiled from db/ (design § 5).
+  // Read the ID both ways (SPI NAND: 9Fh + dummy byte; SPI NOR: plain 9Fh,
+  // after ABh in case the part is in deep power-down) and resolve each view
+  // in its own family's resident entries (design § 5, chip_detect.h).
   nand_read_id(g_id);
+  nor_init(MAX_PAGE_SIZE);
+  nor_release_power_down();
+  nor_read_id(g_nor_id);
   unsigned n_resident;
   const active_profile_t *table = nand_profile_resident(&n_resident);
-  nand_prf_err_t perr;
-  const active_profile_t *hit = nand_profile_find(table, n_resident, g_id[0], g_id[1],
-                                                  g_id[2], &perr);
+  chip_detect_t det = chip_detect_resident(table, n_resident, g_id, g_nor_id);
+  g_detect_family = det.family;
+  const active_profile_t *hit = det.hit;
+  nand_prf_err_t perr = det.err;
+  const uint8_t *id = id_view(det.family);
   // Shared ID: a pick the user saved for this exact (mfr, dev) settles it.
   bool from_choice = false;
-  if (!hit && perr == NAND_PRF_E_AMBIGUOUS_ID) {
+  if (!hit && det.state == NAND_CHIP_AMBIGUOUS) {
     nand_chip_choice_t ch;
-    if (config_load_chip_choice(&ch) && ch.mfr == g_id[0] && ch.dev == g_id[1]) {
-      hit = nand_profile_pick(table, n_resident, g_id[0], g_id[1], ch.name);
-      from_choice = hit != NULL;
+    if (config_load_chip_choice(&ch) && ch.mfr == id[0] && ch.dev == id[1]) {
+      hit = nand_profile_pick(table, n_resident, id[0], id[1], ch.name);
+      from_choice = hit != NULL && is_candidate(hit);
+      if (!from_choice) hit = NULL;
     }
   }
   // Re-assert the cheap sanity checks on the resident entry before trusting it.
   if (hit && (perr = nand_profile_check(hit, MAX_PAGE_SIZE)) != NAND_PRF_OK) hit = NULL;
-  if (hit) {
-    adopt_profile(hit, NAND_CHIP_RESIDENT);
+  // A SPI NOR part in no table can still describe itself (JESD216 SFDP).
+  active_profile_t sfdp_prof;
+  sfdp_info_t sfdp;
+  bool from_sfdp = !hit && det.state == NAND_CHIP_UNKNOWN &&
+                   chip_detect_nor_id_plausible(g_nor_id) && nor_probe_sfdp(&sfdp) &&
+                   sfdp_build_profile(&sfdp, g_nor_id, &sfdp_prof) &&
+                   nand_profile_check(&sfdp_prof, MAX_PAGE_SIZE) == NAND_PRF_OK;
+  if (hit || from_sfdp) {
+    adopt_profile(hit ? hit : &sfdp_prof, hit ? NAND_CHIP_RESIDENT : NAND_CHIP_SFDP);
     cfg_read_mode = (nand_read_mode_t)g_active.read_mode;
-    Serial.printf("[*] Detected %s (0x%02X 0x%02X)%s\n", g_active.name, g_id[0], g_id[1],
-                  from_choice ? " — saved choice for a shared ID; [C] in the menu changes it" : "");
+    id = id_view(g_active.family);
+    Serial.printf("[*] Detected %s %s (0x%02X 0x%02X 0x%02X)%s\n",
+                  is_nor() ? "SPI NOR" : "SPI NAND", g_active.name, id[0], id[1], id[2],
+                  from_choice ? " — saved choice for a shared ID; [C] in the menu changes it"
+                  : from_sfdp ? " — profile built from its SFDP table" : "");
   } else {
-    g_chip_state = perr == NAND_PRF_E_AMBIGUOUS_ID ? NAND_CHIP_AMBIGUOUS : NAND_CHIP_UNKNOWN;
-    Serial.printf("[!] %s for chip 0x%02X 0x%02X 0x%02X — using manual geometry\n",
-                  nand_prf_err_name(perr), g_id[0], g_id[1], g_id[2]);
-    if (perr == NAND_PRF_E_AMBIGUOUS_ID)
+    g_chip_state = det.state == NAND_CHIP_AMBIGUOUS ? NAND_CHIP_AMBIGUOUS : NAND_CHIP_UNKNOWN;
+    // A plausible NOR ID with no SFDP: most likely a pre-SFDP NOR part.
+    if (det.state == NAND_CHIP_UNKNOWN && chip_detect_nor_id_plausible(g_nor_id)) {
+      cfg_family = CHIP_FAMILY_SPI_NOR;
+      cfg_nor_size = nor_size_from_id(g_nor_id[2]);
+    } else {
+      cfg_family = det.family;
+    }
+    Serial.printf("[!] %s for chip (NAND view 0x%02X 0x%02X 0x%02X, NOR view 0x%02X 0x%02X 0x%02X)"
+                  " — using manual %s geometry\n", nand_prf_err_name(perr),
+                  g_id[0], g_id[1], g_id[2], g_nor_id[0], g_nor_id[1], g_nor_id[2],
+                  cfg_family == CHIP_FAMILY_SPI_NOR ? "SPI NOR" : "SPI NAND");
+    if (det.state == NAND_CHIP_AMBIGUOUS)
       for (unsigned i = 0; i < n_resident; i++)
-        if (table[i].id_mfr == g_id[0] && table[i].id_dev == g_id[1])
+        if (is_candidate(&table[i]))
           Serial.printf("    candidate: %s\n", table[i].name);
-    if (perr == NAND_PRF_E_AMBIGUOUS_ID)
+    if (det.state == NAND_CHIP_AMBIGUOUS)
       Serial.println("    Pick one with [C] in the menu (saved for next boot), or let dump.py push it.");
     else
       Serial.println("    dump.py can push this chip's profile from the host database.");
@@ -573,14 +711,16 @@ void loop() {
 
 // ---- Dump Command ----
 void cmd_dump(bool verify) {
-  Serial.println("[*] Starting full NAND dump...");
+  bool nor = is_nor();
+  Serial.printf("[*] Starting full SPI %s dump...\n", nor ? "NOR" : "NAND");
 
   uint32_t total_pages = (uint32_t)cfg_total_blocks * cfg_pages_per_block;
   uint32_t total_bytes = total_pages * (uint32_t)cfg_page_size;
 
   // Each dump is a new read session: quad gets another chance even if the last
   // dump fell back to single.
-  nand_set_read_mode(cfg_read_mode);
+  if (nor) nor_set_read_mode(cfg_read_mode);
+  else nand_set_read_mode(cfg_read_mode);
 
   // Each SPI DMA read lands in a page-sized DMA-capable scratch buffer; completed
   // page-frames (data + 4-byte CRC seal) are copied into a larger batch buffer and
@@ -616,13 +756,14 @@ void cmd_dump(bool verify) {
   geo.total_blocks    = cfg_total_blocks;
   geo.total_pages     = total_pages;
   geo.total_bytes     = total_bytes;
-  geo.mfr_id          = g_id[0];
-  geo.dev_id          = g_id[1];
+  geo.mfr_id          = id_view(g_active.family)[0];
+  geo.dev_id          = id_view(g_active.family)[1];
   geo.page_addr_bits  = cfg_page_addr_bits;
   geo.flags = (cfg_ecc_on ? DUMP_FLAG_ECC_ON : 0)
             | (cfg_read_mode == NAND_READ_QUAD ? DUMP_FLAG_QUAD : 0)
             | (cfg_verify ? DUMP_FLAG_VERIFY : 0)
-            | DUMP_FLAG_PAGECRC;
+            | DUMP_FLAG_PAGECRC
+            | (nor ? DUMP_FLAG_NOR : 0);
   uint8_t hdr[DUMP_HEADER_SIZE];
   dump_header_pack(hdr, &geo);
   if (wifi_transport_send(hdr, sizeof(hdr)) != sizeof(hdr)) {
@@ -640,12 +781,24 @@ void cmd_dump(bool verify) {
   int fill = 0;   // page-frames currently held in batch_buf
 
   bool aborted = false;
+  if (nor) nor_begin();   // 4-byte mode on B7h parts, undone by nor_end below
   for (int block = 0; block < cfg_total_blocks && !aborted; block++) {
     blockMarkedBad = false;
     for (int page = 0; page < cfg_pages_per_block; page++) {
       uint32_t row = nand_row_addr(block, page, cfg_page_addr_bits);
 
-      if (verify) {
+      if (nor) {
+        // SPI NOR is one linear array: a "page" here is one read unit.
+        uint32_t addr = (uint32_t)pagesDone * (uint32_t)cfg_page_size;
+        if (verify) {
+          nand_page_result_t r = nor_read_verified(addr, scratch, cfg_page_size,
+                                                   cfg_max_retries, &retryCount);
+          if (r == NAND_PAGE_UNSTABLE) failedPages++;
+          else if (r == NAND_PAGE_OK_SINGLE) singleRescued++;
+        } else {
+          nor_read(addr, scratch, cfg_page_size);
+        }
+      } else if (verify) {
         nand_page_result_t r = nand_read_page_verified(row, scratch, cfg_page_size,
                                                        cfg_max_retries, &retryCount);
         if (r == NAND_PAGE_UNSTABLE) failedPages++;
@@ -658,7 +811,7 @@ void cmd_dump(bool verify) {
 
       // Factory bad-block marker: where, how wide and which polarity come from
       // the profile's bbm fields. Only meaningful on a raw (ECC off) read.
-      if (!cfg_ecc_on && !blockMarkedBad &&
+      if (!nor && !cfg_ecc_on && !blockMarkedBad &&
           nand_profile_is_bbm_page(&g_active, page, cfg_pages_per_block) &&
           nand_profile_marker_bad(&g_active, scratch, cfg_page_size, cfg_spare_size)) {
         blockMarkedBad = true;
@@ -671,7 +824,7 @@ void cmd_dump(bool verify) {
       // uncorrectable page, so surface it here — otherwise a damaged page passes
       // silently. The field and its meaning are vendor-specific, so the decode
       // is the profile's ecc_map. (The status is only valid with ECC enabled.)
-      if (cfg_ecc_on) {
+      if (cfg_ecc_on && !nor) {
         nand_ecc_sev_t sev = nand_profile_ecc_severity(&g_active, nand_get_status());
         if (sev == NAND_ECC_UNCORRECTABLE) {
           eccUncorrectable++;
@@ -717,6 +870,8 @@ void cmd_dump(bool verify) {
     }
   }
 
+  if (nor) nor_end();
+
   // Flush the final partial batch.
   if (!aborted && fill > 0) {
     size_t n = (size_t)fill * frame_size;
@@ -744,9 +899,10 @@ void cmd_dump(bool verify) {
   Serial.printf("[+] Retries: %u | Failed pages: %u\n", retryCount, failedPages);
   if (singleRescued)
     Serial.printf("[+] Quad fallback: %u page(s) re-read single%s\n", singleRescued,
-                  nand_get_read_mode() == NAND_READ_SINGLE && cfg_read_mode == NAND_READ_QUAD
+                  (nor ? nor_get_read_mode() : nand_get_read_mode()) == NAND_READ_SINGLE &&
+                  cfg_read_mode == NAND_READ_QUAD
                       ? "; the rest of the dump ran single" : "");
-  if (!cfg_ecc_on)
+  if (!cfg_ecc_on && !nor)
     Serial.printf("[+] Bad-block markers (%s): %u block(s)\n", g_active.name, badBlocks);
   if (cfg_ecc_on) {
     Serial.printf("[+] ECC: %u uncorrectable, %u refresh-recommended pages\n",

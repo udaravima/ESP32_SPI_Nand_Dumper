@@ -3,6 +3,7 @@
 #include "nand_seq.h"
 #include <string.h>
 #include <Arduino.h>  // For Serial debug
+#include "driver/gpio.h"
 
 static spi_device_handle_t s_spi;
 static spi_device_interface_config_t s_devcfg;  // kept so nand_set_clock can re-add the device
@@ -26,6 +27,25 @@ static void spi_bus_xfer(void *, uint8_t cmd, uint32_t addr, uint8_t addr_bits,
   spi_device_polling_transmit(s_spi, (spi_transaction_t *)&t);
 }
 static void spi_bus_wait(void *) { nand_wait_ready(); }
+
+// Raw transaction with a dummy phase, for the SPI NOR driver (nor_driver.cpp),
+// which shares this bus and device. Replies of up to 4 bytes land in rx_data,
+// so callers may pass small stack buffers.
+void nand_spi_xfer(uint8_t cmd, uint32_t addr, uint8_t addr_bits, uint8_t dummy_bits,
+                   uint8_t *rx, int rx_len, bool quad) {
+  spi_transaction_ext_t t = {};
+  bool small = rx_len > 0 && rx_len <= 4;
+  t.base.flags = SPI_TRANS_VARIABLE_ADDR | SPI_TRANS_VARIABLE_DUMMY |
+                 (quad ? SPI_TRANS_MODE_QIO : 0) | (small ? SPI_TRANS_USE_RXDATA : 0);
+  t.base.cmd = cmd;
+  t.base.addr = addr;
+  t.address_bits = addr_bits;
+  t.dummy_bits = dummy_bits;
+  t.base.rxlength = rx_len * 8;
+  t.base.rx_buffer = small ? NULL : rx;
+  spi_device_polling_transmit(s_spi, (spi_transaction_t *)&t);
+  if (small) memcpy(rx, t.base.rx_data, rx_len);
+}
 static nand_seq_t s_seq;
 
 esp_err_t nand_init(const nand_config_t *config, int max_page_size) {
@@ -52,6 +72,9 @@ esp_err_t nand_init(const nand_config_t *config, int max_page_size) {
 
   esp_err_t ret = spi_bus_initialize(NAND_SPI_HOST, &buscfg, SPI_DMA_CH_AUTO);
   if (ret != ESP_OK) return ret;
+  // Pull MISO up so an empty socket (or a chip ignoring an opcode) reads 0xFF
+  // rather than noise: detection then sees a flat ID, not a random one.
+  gpio_pullup_en((gpio_num_t)config->pin_d1);
   ret = spi_bus_add_device(NAND_SPI_HOST, &s_devcfg, &s_spi);
   if (ret != ESP_OK) return ret;
 
@@ -122,11 +145,14 @@ void nand_set_ecc(bool on) {
   nand_set_feature(s_cfg_addr, cfg);
 }
 
-void nand_wait_ready(void) {
-  uint8_t status;
-  do {
-    status = nand_get_feature(s_status_addr);
-  } while (status & NAND_STATUS_OIP);
+// Bounded: a chip that never answers the NAND status read (a SPI NOR part, or
+// an empty socket with MISO high) must not hang detection. Real SPI NAND
+// operations finish in well under a millisecond (tRST, tRD).
+bool nand_wait_ready(void) {
+  uint32_t start = millis();
+  while (nand_get_feature(s_status_addr) & NAND_STATUS_OIP)
+    if (millis() - start > NAND_READY_TIMEOUT_MS) return false;
+  return true;
 }
 
 void nand_set_plane_config(uint8_t planes, uint8_t page_addr_bits, uint32_t main_size) {

@@ -1,4 +1,4 @@
-"""ESP32 SPI NAND Dumper - PC-side TCP receiver.
+"""ESP32 SPI NAND/NOR Dumper - PC-side TCP receiver.
 
 Connects to the ESP32 over WiFi TCP, sends a 'GO' trigger, reads a 32-byte
 geometry header, then streams the raw NAND dump to a timestamped file in
@@ -81,15 +81,18 @@ def resolve_config(cli, saved):
 RESP_MAGIC = b"NRSP"
 RESP_HDR_FMT = "<4sBBH"          # magic, cmd, status, payload length
 INFO_FMT = "<BBI3sB24s"          # session ver, schema ver, max page, id[3], state, name
+INFO_V2_FMT = INFO_FMT + "3sB"   # session v2: + SPI NOR id view[3], active family
 ECHO_FMT = "<24sIIIIB4s3sI"      # name, page, spare, ppb, blocks, planes,
                                  # expected id (mfr, dev, dev2, flags), detected id, blob crc
+ECHO_V2_FMT = ECHO_FMT + "B"     # session v2: + profile family
 INFO_TIMEOUT = 3.0               # pre-v4 firmware never answers 'I'
 # nand_prf_err_t, in enum order (codes travel on the wire and only ever grow).
 PRF_ERRORS = ["OK", "E_BAD_MAGIC", "E_SCHEMA_VER", "E_BAD_LEN", "E_BAD_CRC",
               "E_STRUCTURE", "E_GEOMETRY", "E_PAGE_TOO_BIG", "E_ID_MISMATCH",
               "E_AMBIGUOUS_ID", "E_UNKNOWN_ID", "E_NOT_STAGED", "E_ARM_CRC",
               "E_NOT_ARMED", "E_BAD_CMD", "E_TIMEOUT"]
-CHIP_STATES = {0: "resident", 1: "unknown", 2: "ambiguous", 3: "pushed"}
+CHIP_STATES = {0: "resident", 1: "unknown", 2: "ambiguous", 3: "pushed", 4: "sfdp"}
+FAMILIES = {0: "spi-nand", 1: "spi-nor"}
 
 
 class SessionError(Exception):
@@ -129,11 +132,30 @@ def command(sock, cmd, payload=b""):
 
 
 def parse_info(body):
-    sver, schema, max_page, ident, state, name = struct.unpack(INFO_FMT, body)
+    """'I' reply. `mfr/dev/dev2` is the SPI NAND view of the ID (9Fh + dummy
+    byte); session v2 adds `nor_id`, the plain-9Fh SPI NOR view, and the
+    active profile's family. v1 firmware knows only SPI NAND."""
+    v2 = len(body) >= struct.calcsize(INFO_V2_FMT)
+    fields = struct.unpack_from(INFO_V2_FMT if v2 else INFO_FMT, body)
+    sver, schema, max_page, ident, state, name = fields[:6]
     return {"session_ver": sver, "schema_ver": schema, "max_page_size": max_page,
             "mfr": ident[0], "dev": ident[1], "dev2": ident[2],
+            "nor_id": tuple(fields[6]) if v2 else None,
+            "family": FAMILIES.get(fields[7], "spi-nand") if v2 else "spi-nand",
             "state": CHIP_STATES.get(state, f"state{state}"),
             "name": name.split(b"\0", 1)[0].decode(errors="replace")}
+
+
+def detected_id(info, family):
+    """The detected ID as a chip of `family` reports it."""
+    if family == "spi-nor":
+        return info.get("nor_id")
+    return (info["mfr"], info["dev"], info["dev2"])
+
+
+def nor_id_plausible(nid):
+    """Same rule as the firmware: a real manufacturer byte, not a flat bus."""
+    return bool(nid) and nid[0] not in (0x00, 0xFF)
 
 
 def query_info(sock, timeout=INFO_TIMEOUT):
@@ -157,12 +179,15 @@ def query_info(sock, timeout=INFO_TIMEOUT):
 
 
 def parse_echo(body):
-    (name, page, spare, ppb, blocks, planes, exp, det, crc) = struct.unpack(ECHO_FMT, body)
+    v2 = len(body) >= struct.calcsize(ECHO_V2_FMT)
+    fields = struct.unpack_from(ECHO_V2_FMT if v2 else ECHO_FMT, body)
+    (name, page, spare, ppb, blocks, planes, exp, det, crc) = fields[:9]
     return {"name": name.split(b"\0", 1)[0].decode(errors="replace"),
             "page_size": page, "spare_size": spare, "pages_per_block": ppb,
             "total_blocks": blocks, "planes": planes,
             "expected_id": tuple(exp[:3]), "expected_flags": exp[3],
-            "detected_id": tuple(det), "crc": crc}
+            "detected_id": tuple(det), "crc": crc,
+            "family": FAMILIES.get(fields[9], "spi-nand") if v2 else "spi-nand"}
 
 
 def echo_mismatches(echo, flat, blob, info):
@@ -171,7 +196,8 @@ def echo_mismatches(echo, flat, blob, info):
             "spare_size": flat["spare_size"], "pages_per_block": flat["pages_per_block"],
             "total_blocks": flat["total_blocks"], "planes": flat["planes"],
             "expected_id": (flat["id_mfr"], flat["id_dev"], flat["id_dev2"]),
-            "detected_id": (info["mfr"], info["dev"], info["dev2"]),
+            "detected_id": detected_id(info, flat["family"]),
+            "family": flat["family"],
             "crc": struct.unpack("<I", blob[-4:])[0]}
     return [f"{k}: device {echo[k]!r}, host {v!r}" for k, v in want.items() if echo[k] != v]
 
@@ -182,7 +208,7 @@ def push_and_arm(sock, flat, blob, info):
     try:
         echo = parse_echo(command(sock, "P", blob))
     except SessionError as e:
-        if e.code == "E_ID_MISMATCH" and len(e.payload) == struct.calcsize(ECHO_FMT):
+        if e.code == "E_ID_MISMATCH" and len(e.payload) >= struct.calcsize(ECHO_FMT):
             ec = parse_echo(e.payload)
             raise SessionError("P", "E_ID_MISMATCH: profile expects "
                                + " ".join(f"0x{b:02X}" for b in ec["expected_id"])
@@ -197,7 +223,12 @@ def push_and_arm(sock, flat, blob, info):
     return echo
 
 
-def id_key(mfr, dev):
+def id_key(mfr, dev, family="spi-nand", dev2=None):
+    """dump.config.json key for a remembered chip choice. SPI NAND keeps the
+    stage-3 'MF:DV' form; SPI NOR adds the capacity byte and a prefix, since
+    one (mfr, type) spans a whole series there."""
+    if family == "spi-nor":
+        return f"NOR:{mfr:02X}:{dev:02X}:{dev2:02X}"
     return f"{mfr:02X}:{dev:02X}"
 
 
@@ -216,25 +247,43 @@ def resolve_profile(info, chip, saved, ask=None, db_root=None):
         flat = chipdb.flatten(db, chip)
         chipdb.check_flat(flat)
         return flat, True
-    cached = (saved.get("chips") or {}).get(id_key(info["mfr"], info["dev"]))
-    try:
-        flat = chipdb.identify(db, info["mfr"], info["dev"], info["dev2"], cached)
-        return flat, False
-    except chipdb.AmbiguousId as e:
-        if ask is None:
-            raise
-        flat = ask(e.candidates)
-        return flat, flat is not None
-    except chipdb.ChipDBError:
+    chips = saved.get("chips") or {}
+    # Look the chip up in each family through that family's view of the ID
+    # (same rule as the firmware's chip_detect): SPI NAND always, SPI NOR when
+    # v2 firmware reported a plausible plain-9Fh ID.
+    views = [("spi-nand", (info["mfr"], info["dev"], info["dev2"]))]
+    if nor_id_plausible(info.get("nor_id")):
+        views.append(("spi-nor", info["nor_id"]))
+    found, ambiguous = [], []
+    for family, (mfr, dev, dev2) in views:
+        cached = chips.get(id_key(mfr, dev, family, dev2))
+        try:
+            found.append(chipdb.identify(db, mfr, dev, dev2, cached, family=family))
+        except chipdb.AmbiguousId as e:
+            ambiguous += e.candidates
+        except chipdb.ChipDBError:
+            pass
+    cands = found + ambiguous
+    if not cands:
         return None, False      # not in the DB either: device keeps manual geometry
+    if len(found) == 1 and not ambiguous:
+        return found[0], False
+    if ask is None:
+        raise chipdb.AmbiguousId(cands)
+    flat = ask(cands)
+    return flat, flat is not None
 
 
 def ask_candidate(cands):
     """Interactive tiebreak for a shared JEDEC ID (design section 5)."""
     print("[?] Several chips share this ID:")
     for i, c in enumerate(cands, 1):
-        print(f"    [{i}] {c['name']}: {c['total_blocks']} blocks x "
-              f"{c['pages_per_block']} x {c['page_size']} B, {c['planes']} plane(s)")
+        if c["family"] == "spi-nor":
+            size = c["page_size"] * c["pages_per_block"] * c["total_blocks"]
+            print(f"    [{i}] {c['name']}: SPI NOR, {size >> 10} KiB")
+        else:
+            print(f"    [{i}] {c['name']}: {c['total_blocks']} blocks x "
+                  f"{c['pages_per_block']} x {c['page_size']} B, {c['planes']} plane(s)")
     while True:
         pick = input("    Pick one (empty to abort): ").strip()
         if not pick:
@@ -251,6 +300,7 @@ FLAG_ECC_ON = 0x01
 FLAG_QUAD = 0x02
 FLAG_VERIFY = 0x04
 FLAG_PAGECRC = 0x08   # proto v2: each page followed by a 4-byte CRC32 seal
+FLAG_NOR = 0x10       # SPI NOR: pages are 4 KiB read units, no spare area
 
 # Result of streaming a dump off the wire.
 ReceiveResult = namedtuple(
@@ -352,6 +402,7 @@ def write_metadata(out_path, geom, byte_count, result=None, profile=None):
         "quad": bool(geom["flags"] & FLAG_QUAD),
         "verify": bool(geom["flags"] & FLAG_VERIFY),
         "page_crc": bool(geom["flags"] & FLAG_PAGECRC),
+        "family": "spi-nor" if geom["flags"] & FLAG_NOR else "spi-nand",
         "proto_version": geom.get("proto_version"),
         "bytes_received": byte_count,
         "timestamp": datetime.datetime.now().isoformat(),
@@ -390,9 +441,13 @@ def prepare_profile(sock, chip, saved):
                                "drop --chip or flash v4")
         print("[*] Pre-v4 firmware (no 'I' reply): dumping with its built-in table.")
         return None
-    ident = f"0x{info['mfr']:02X} 0x{info['dev']:02X} 0x{info['dev2']:02X}"
+    ident = " ".join(f"0x{b:02X}" for b in detected_id(info, info["family"]))
+    if info["state"] in ("unknown", "ambiguous") and info.get("nor_id"):
+        ident = ("NAND view " + " ".join(f"0x{b:02X}" for b in detected_id(info, "spi-nand"))
+                 + ", NOR view " + " ".join(f"0x{b:02X}" for b in info["nor_id"]))
     print(f"[*] Device detected {ident}: {info['state']}"
-          + (f" ({info['name']})" if info["state"] in ("resident", "pushed") else ""))
+          + (f" ({info['name']}, {info['family']})"
+             if info["state"] in ("resident", "pushed", "sfdp") else ""))
 
     try:
         flat, remember = resolve_profile(info, chip, saved,
@@ -408,7 +463,7 @@ def prepare_profile(sock, chip, saved):
         if info["state"] in ("unknown", "ambiguous"):
             print("[!] Chip not in the database: the device will dump with the geometry "
                   "set in its serial menu.")
-        return {"name": info["name"], "source": info["state"]}
+        return {"name": info["name"], "source": info["state"], "family": info["family"]}
 
     blob = chipdb.pack_blob(flat)
     print(f"[*] Pushing profile {flat['name']} ({len(blob)} B, CRC "
@@ -416,8 +471,9 @@ def prepare_profile(sock, chip, saved):
     push_and_arm(sock, flat, blob, info)
     print(f"[+] Device verified and armed {flat['name']}.")
     if remember:
+        did = detected_id(info, flat["family"]) or (flat["id_mfr"], flat["id_dev"], flat["id_dev2"])
         saved["chips"] = dict(saved.get("chips") or {},
-                              **{id_key(info["mfr"], info["dev"]): flat["name"]})
+                              **{id_key(did[0], did[1], flat["family"], did[2]): flat["name"]})
         save_config(CONFIG_PATH, saved)
     return {"name": flat["name"], "source": "pushed", "family": flat["family"],
             "profile": flat["profile"], "ecc_scheme": flat["ecc_scheme"],
@@ -436,10 +492,8 @@ def main(argv=None):
         print(f"[*] Saved connection settings to {os.path.basename(CONFIG_PATH)}")
     ip, port, out_dir = cfg["ip"], cfg["port"], cfg["out_dir"]
 
-    out_file = os.path.join(
-        out_dir, 'nand_raw_dump_'
-        + datetime.datetime.now().strftime("%Y%m%d_%H%M%S") + '.bin')
-    os.makedirs(os.path.dirname(out_file) or '.', exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    os.makedirs(out_dir or '.', exist_ok=True)
 
     print(f"[*] Connecting to ESP32 at {ip}:{port}...")
     try:
@@ -472,10 +526,17 @@ def main(argv=None):
     total_mb = total_bytes / (1024 * 1024)
     page_size = geom["page_size"]
     pagecrc = bool(geom["flags"] & FLAG_PAGECRC)
-    print(f"[*] Chip 0x{geom['mfr_id']:02X} 0x{geom['dev_id']:02X} | "
-          f"{geom['total_blocks']} blocks x {geom['pages_per_block']} x {page_size} B "
-          f"| ECC {'on' if geom['flags'] & FLAG_ECC_ON else 'off'} "
-          f"| {'quad' if geom['flags'] & FLAG_QUAD else 'single'}")
+    nor = bool(geom["flags"] & FLAG_NOR)
+    out_file = os.path.join(out_dir, f"{'nor' if nor else 'nand'}_raw_dump_{stamp}.bin")
+    if nor:
+        print(f"[*] SPI NOR 0x{geom['mfr_id']:02X} 0x{geom['dev_id']:02X} | "
+              f"{total_bytes >> 10} KiB in {page_size} B units "
+              f"| {'quad' if geom['flags'] & FLAG_QUAD else 'single'}")
+    else:
+        print(f"[*] Chip 0x{geom['mfr_id']:02X} 0x{geom['dev_id']:02X} | "
+              f"{geom['total_blocks']} blocks x {geom['pages_per_block']} x {page_size} B "
+              f"| ECC {'on' if geom['flags'] & FLAG_ECC_ON else 'off'} "
+              f"| {'quad' if geom['flags'] & FLAG_QUAD else 'single'}")
     print(f"[*] Proto v{geom['proto_version']} | "
           f"per-page CRC {'on' if pagecrc else 'off'} | expecting {total_mb:.2f} MB.")
 

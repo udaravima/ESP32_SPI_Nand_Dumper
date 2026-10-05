@@ -1,0 +1,24 @@
+# SPI NOR (25-series) bus/command set, JESD216-era common subset. Every
+# address-taking read here is 1-1-x: opcode and address on one line, data on
+# x lines. Write/erase opcodes are designed in now and unused until the write
+# cycle; this firmware never writes a NOR status register or the array.
+spi-nor:
+  opcodes:
+    read_id: 0x9F
+    read: {x1: 0x03, x4: 0x6B}         # 3-byte address
+    read_4b: {x1: 0x13, x4: 0x6C}      # native 4-byte address variants
+    read_sr: 0x05                      # status register 1 (WIP = bit 0)
+    write_sr: 0x01
+    write_enable: 0x06
+    enter_4byte: 0xB7
+    exit_4byte: 0xE9
+    reset_enable: 0x66
+    reset: 0x99
+    release_power_down: 0xAB
+    read_sfdp: 0x5A
+    page_program: 0x02
+    sector_erase: 0x20
+    block_erase: 0xD8
+  dummy_cycles: {x1: 0, x4: 8}         # 03h has none; 6Bh/6Ch need 8
+  read_unit: 4096                      # bytes per dump frame (one 4 KiB sector)
+  read_id_default: {method: none, id_bytes: 3}   # 9Fh, then mfr, type, capacity
