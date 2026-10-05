@@ -6,6 +6,19 @@ follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+- **Vendor-profile stage 3: push a profile for chips the firmware doesn't
+  carry.** A client connection is now a small command session: `I` (what did
+  the device detect), `P` (push a `PRF` profile blob), `A` (arm it) and `G`
+  (dump). The device runs every blob check plus the ID cross-check before
+  staging a profile, echoes it back, and only makes it live on an `A` that
+  names the staged blob's CRC; any failure discards the profile whole.
+  `dump.py` resolves unknown or ambiguous IDs in `db/`, pushes and verifies the
+  echo before arming, remembers ambiguous-ID choices and `--chip` in
+  `dump.config.json`, and records the profile in `*.meta.json`. A bare `G`
+  still dumps exactly as before, and `dump.py` falls back to it on older
+  firmware.
+
 ### Fixed
 - **Odd blocks on 2-plane chips were read from the wrong plane.** The READ FROM
   CACHE column address never carried the plane-select bit (bit 12 for a 2048-byte

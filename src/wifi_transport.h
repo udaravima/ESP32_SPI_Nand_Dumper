@@ -28,8 +28,10 @@ bool wifi_transport_ready();
 // Returns true if a client was accepted (into the internal handle), else false.
 bool wifi_transport_client_available();
 
-// Wait for the 'G' (GO) trigger from the client.
-void wifi_transport_wait_trigger();
+// Read exactly `n` bytes from the client, waiting at most `timeout_ms`.
+// Returns the count read: less than `n` on timeout or disconnect. This is the
+// session link's read (src/nand_session.h).
+size_t wifi_transport_read(uint8_t *buf, size_t n, uint32_t timeout_ms);
 
 // Send a buffer of data to the connected client.
 // Returns number of bytes sent.

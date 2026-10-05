@@ -113,6 +113,40 @@ through the GPIO matrix instead of IOMUX is fine if you can't hit the IOMUX pins
 
 ## The wire protocol
 
+### Command session (v4)
+
+Each TCP connection is a short command session
+([`nand_session.h`](../src/nand_session.h)). A client may send:
+
+| Command | Payload | Reply |
+|---|---|---|
+| `'I'` | none | info: session ver u8, schema ver u8, max page u32, detected ID[3], state u8 (0 resident, 1 unknown, 2 ambiguous, 3 pushed), active profile name[24] |
+| `'P'` | a 130-byte `PRF` blob (`tools/chipdb.py --blob`) | echo: name[24], page/spare/ppb/blocks u32, planes u8, expected ID[3] + id_flags, detected ID[3], blob CRC32 |
+| `'A'` | the staged blob's CRC32 (u32) | empty |
+| `'G'` | none | the 32-byte dump header and the page stream (below) |
+
+Every reply to `I`/`P`/`A`, and a refused `G`, is one frame:
+`"NRSP" | cmd u8 | status u8 | len u16 | payload | CRC32`, where `status` is a
+`nand_prf_err_t` (`0` = OK) and the CRC covers everything before it.
+
+A push is **fail-closed and two-phase**. `P` runs the framing, structure and
+geometry checks, then the ID cross-check against the chip the device read. Only
+then is the profile *staged*, and the device echoes it back. `dump.py` compares
+the echo field by field with what it sent, and only then sends `A` with the
+blob's CRC, which makes the staged profile live. A failed push discards the
+profile and anything staged before it; an `A` with the wrong CRC disarms; a `G`
+while a pushed profile is still unarmed is refused rather than dumping on the
+old profile. A framing header the firmware doesn't understand (other magic,
+schema version or length) closes the connection, since the stream can't be
+resynced without guessing a length. A staged profile never outlives its
+connection; an armed one stays active until reboot.
+
+A bare `'G'` behaves exactly as before v4, so older clients still work. Pre-v4
+firmware ignores `'I'`; `dump.py` treats three seconds of silence as that and
+falls back to a bare `G`.
+
+### Dump stream
+
 After the client sends the `'G'` trigger, the firmware sends a **32-byte
 little-endian header**, then the page stream.
 

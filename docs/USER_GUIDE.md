@@ -184,10 +184,19 @@ case it quietly runs single.
    python3 dump.py                     # thereafter
    ```
 
-`dump.py` connects, sends the trigger, reads the geometry header the ESP32 sends,
+`dump.py` connects, asks the ESP32 which chip it detected, sends the trigger, reads the geometry header the ESP32 sends,
 and streams the dump to `target/nand_raw_dump_<timestamp>.bin`, printing progress.
 Because it learns the geometry from the header, you never have to configure page
 size or total size on the PC side — they can't get out of sync with the firmware.
+
+**Chips the firmware doesn't know.** If the chip is in the database (`db/`) but
+not compiled into the firmware, `dump.py` sends its profile to the ESP32 before
+the dump. The ESP32 checks it (including that the profile's ID matches the chip
+it read), echoes it back, and only uses it once `dump.py` confirms the echo. If
+several chips share the ID, `dump.py` asks which one you have and remembers the
+answer in `dump.config.json`. To use a specific profile, pass `--chip NAME`
+(the ID check still applies). Chips that are in neither the firmware nor the
+database are dumped with the geometry set in the serial menu, as before.
 
 For the Micron MT29F2G01 the expected size is **286,261,248 bytes**
 (2048 blocks × 64 pages × 2176 bytes). If `dump.py` warns that it received fewer
@@ -205,6 +214,7 @@ Alongside each dump, `dump.py` writes `<dump>.bin.meta.json`:
                 "total_bytes": 286261248 },
   "ecc_on": false, "quad": false, "verify": true,
   "bytes_received": 286261248,
+  "profile": { "name": "MT29F2G01ABAGD", "source": "resident" },
   "timestamp": "..."
 }
 ```

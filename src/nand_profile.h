@@ -10,7 +10,7 @@
 // The host flattens family -> profile -> chip into this one struct
 // (tools/chipdb.py); the device never resolves layers. Resident chips are
 // compiled in from db/ by tools/gen_profiles.py; a pushed profile (stage 3)
-// arrives as the same bytes inside a 'PRF' blob. Pure and Arduino-free, so the
+// arrives as the same bytes inside a 'PRF' blob (src/nand_session.h). Pure and Arduino-free, so the
 // native tests link it.
 
 typedef enum { NAND_READ_SINGLE = 0, NAND_READ_QUAD = 1 } nand_read_mode_t;
@@ -82,6 +82,13 @@ typedef enum {
   NAND_PRF_E_ID_MISMATCH,
   NAND_PRF_E_AMBIGUOUS_ID,
   NAND_PRF_E_UNKNOWN_ID,
+  // Push session (stage 3, src/nand_session.h). Values travel on the wire, so
+  // new codes are only ever appended.
+  NAND_PRF_E_NOT_STAGED,      // ARM with no verified profile waiting
+  NAND_PRF_E_ARM_CRC,         // ARM named a different blob than the one staged
+  NAND_PRF_E_NOT_ARMED,       // GO while a pushed profile is still unarmed
+  NAND_PRF_E_BAD_CMD,         // unknown session command byte
+  NAND_PRF_E_TIMEOUT,         // the link went quiet mid-command
 } nand_prf_err_t;
 
 const char *nand_prf_err_name(nand_prf_err_t e);

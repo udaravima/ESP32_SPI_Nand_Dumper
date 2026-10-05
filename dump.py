@@ -4,8 +4,15 @@ Connects to the ESP32 over WiFi TCP, sends a 'GO' trigger, reads a 32-byte
 geometry header, then streams the raw NAND dump to a timestamped file in
 target/ and writes a <dump>.meta.json sidecar describing the geometry.
 
+Before the dump it asks the device which chip it detected ('I'). If the
+firmware has no built-in profile for it, dump.py looks the ID up in the chip
+database (db/, via tools/chipdb.py), pushes the flat profile ('P'), checks the
+device's echo of it, and arms it ('A'). Firmware older than v4 does not answer
+'I'; dump.py then sends a bare 'G', as it always did.
+
 Usage:
     python3 dump.py
+    python3 dump.py --chip DS35Q1GA     # push this DB profile (ID still cross-checked)
 
 Set ESP32_IP to the address printed in the ESP32 serial monitor.
 """
@@ -69,6 +76,172 @@ def resolve_config(cli, saved):
     return {"ip": pick("ip", DEFAULT_IP),
             "port": pick("port", DEFAULT_PORT),
             "out_dir": pick("out_dir", DEFAULT_OUT_DIR)}
+
+# ---- Command session (src/nand_session.h) ---------------------------------------
+RESP_MAGIC = b"NRSP"
+RESP_HDR_FMT = "<4sBBH"          # magic, cmd, status, payload length
+INFO_FMT = "<BBI3sB24s"          # session ver, schema ver, max page, id[3], state, name
+ECHO_FMT = "<24sIIIIB4s3sI"      # name, page, spare, ppb, blocks, planes,
+                                 # expected id (mfr, dev, dev2, flags), detected id, blob crc
+INFO_TIMEOUT = 3.0               # pre-v4 firmware never answers 'I'
+# nand_prf_err_t, in enum order (codes travel on the wire and only ever grow).
+PRF_ERRORS = ["OK", "E_BAD_MAGIC", "E_SCHEMA_VER", "E_BAD_LEN", "E_BAD_CRC",
+              "E_STRUCTURE", "E_GEOMETRY", "E_PAGE_TOO_BIG", "E_ID_MISMATCH",
+              "E_AMBIGUOUS_ID", "E_UNKNOWN_ID", "E_NOT_STAGED", "E_ARM_CRC",
+              "E_NOT_ARMED", "E_BAD_CMD", "E_TIMEOUT"]
+CHIP_STATES = {0: "resident", 1: "unknown", 2: "ambiguous", 3: "pushed"}
+
+
+class SessionError(Exception):
+    """The device refused a command. `code` is its nand_prf_err_t name."""
+    def __init__(self, cmd, code, payload=b""):
+        self.cmd, self.code, self.payload = cmd, code, payload
+        super().__init__(f"'{cmd}' refused: {code}")
+
+
+def prf_error_name(status):
+    return PRF_ERRORS[status] if status < len(PRF_ERRORS) else f"E_{status}"
+
+
+def read_response(sock, first=b""):
+    """Read one 'NRSP' frame (whose first bytes may already be in `first`).
+    Returns (cmd char, status code, payload)."""
+    hdr = first + recv_exact(sock, 8 - len(first))
+    magic, cmd, status, ln = struct.unpack(RESP_HDR_FMT, hdr)
+    if magic != RESP_MAGIC:
+        raise IOError(f"bad response magic {magic!r}")
+    rest = recv_exact(sock, ln + 4)
+    (crc,) = struct.unpack("<I", rest[ln:])
+    if zlib.crc32(hdr + rest[:ln]) & 0xFFFFFFFF != crc:
+        raise IOError("response CRC mismatch")
+    return chr(cmd), status, rest[:ln]
+
+
+def command(sock, cmd, payload=b""):
+    """Send one command and return its payload; raise SessionError on refusal."""
+    sock.sendall(cmd.encode() + payload)
+    rcmd, status, body = read_response(sock)
+    if rcmd != cmd:
+        raise IOError(f"reply to '{rcmd}' while waiting for '{cmd}'")
+    if status:
+        raise SessionError(cmd, prf_error_name(status), body)
+    return body
+
+
+def parse_info(body):
+    sver, schema, max_page, ident, state, name = struct.unpack(INFO_FMT, body)
+    return {"session_ver": sver, "schema_ver": schema, "max_page_size": max_page,
+            "mfr": ident[0], "dev": ident[1], "dev2": ident[2],
+            "state": CHIP_STATES.get(state, f"state{state}"),
+            "name": name.split(b"\0", 1)[0].decode(errors="replace")}
+
+
+def query_info(sock, timeout=INFO_TIMEOUT):
+    """Ask the device what it detected. None means pre-v4 firmware, which
+    ignores 'I' and is still waiting for 'G'."""
+    old = sock.gettimeout()
+    sock.settimeout(timeout)
+    try:
+        sock.sendall(b"I")
+        first = sock.recv(1)
+    except socket.timeout:
+        return None
+    finally:
+        sock.settimeout(old)
+    if not first:
+        raise IOError("connection closed")
+    rcmd, status, body = read_response(sock, first)
+    if rcmd != "I" or status:
+        raise IOError(f"unexpected reply to 'I': '{rcmd}' {prf_error_name(status)}")
+    return parse_info(body)
+
+
+def parse_echo(body):
+    (name, page, spare, ppb, blocks, planes, exp, det, crc) = struct.unpack(ECHO_FMT, body)
+    return {"name": name.split(b"\0", 1)[0].decode(errors="replace"),
+            "page_size": page, "spare_size": spare, "pages_per_block": ppb,
+            "total_blocks": blocks, "planes": planes,
+            "expected_id": tuple(exp[:3]), "expected_flags": exp[3],
+            "detected_id": tuple(det), "crc": crc}
+
+
+def echo_mismatches(echo, flat, blob, info):
+    """Compare the device's echo with what was pushed. Empty list = arm."""
+    want = {"name": flat["name"], "page_size": flat["page_size"],
+            "spare_size": flat["spare_size"], "pages_per_block": flat["pages_per_block"],
+            "total_blocks": flat["total_blocks"], "planes": flat["planes"],
+            "expected_id": (flat["id_mfr"], flat["id_dev"], flat["id_dev2"]),
+            "detected_id": (info["mfr"], info["dev"], info["dev2"]),
+            "crc": struct.unpack("<I", blob[-4:])[0]}
+    return [f"{k}: device {echo[k]!r}, host {v!r}" for k, v in want.items() if echo[k] != v]
+
+
+def push_and_arm(sock, flat, blob, info):
+    """'P' the blob, check the echo field by field, then 'A' with its CRC.
+    Nothing goes live on the device unless every check here passes."""
+    try:
+        echo = parse_echo(command(sock, "P", blob))
+    except SessionError as e:
+        if e.code == "E_ID_MISMATCH" and len(e.payload) == struct.calcsize(ECHO_FMT):
+            ec = parse_echo(e.payload)
+            raise SessionError("P", "E_ID_MISMATCH: profile expects "
+                               + " ".join(f"0x{b:02X}" for b in ec["expected_id"])
+                               + ", chip reads "
+                               + " ".join(f"0x{b:02X}" for b in ec["detected_id"])) from None
+        raise
+    bad = echo_mismatches(echo, flat, blob, info)
+    if bad:
+        # Not armed: the device drops the staged profile when the session ends.
+        raise SessionError("P", "echo mismatch (" + "; ".join(bad) + ")")
+    command(sock, "A", blob[-4:])
+    return echo
+
+
+def id_key(mfr, dev):
+    return f"{mfr:02X}:{dev:02X}"
+
+
+def resolve_profile(info, chip, saved, ask=None, db_root=None):
+    """Pick the DB profile to push, or None to dump with what the device has.
+
+    `chip` (from --chip) always wins. Otherwise only a chip the firmware could
+    not resolve on its own (unknown or ambiguous ID) is looked up; an ambiguous
+    one uses the choice remembered in dump.config.json, else asks `ask`.
+    Returns (flat, remember) where remember says to cache the choice."""
+    if not chip and info["state"] not in ("unknown", "ambiguous"):
+        return None, False
+    from tools import chipdb
+    db = chipdb.load_db(db_root) if db_root else chipdb.load_db()
+    if chip:
+        flat = chipdb.flatten(db, chip)
+        chipdb.check_flat(flat)
+        return flat, True
+    cached = (saved.get("chips") or {}).get(id_key(info["mfr"], info["dev"]))
+    try:
+        flat = chipdb.identify(db, info["mfr"], info["dev"], info["dev2"], cached)
+        return flat, False
+    except chipdb.AmbiguousId as e:
+        if ask is None:
+            raise
+        flat = ask(e.candidates)
+        return flat, flat is not None
+    except chipdb.ChipDBError:
+        return None, False      # not in the DB either: device keeps manual geometry
+
+
+def ask_candidate(cands):
+    """Interactive tiebreak for a shared JEDEC ID (design section 5)."""
+    print("[?] Several chips share this ID:")
+    for i, c in enumerate(cands, 1):
+        print(f"    [{i}] {c['name']}: {c['total_blocks']} blocks x "
+              f"{c['pages_per_block']} x {c['page_size']} B, {c['planes']} plane(s)")
+    while True:
+        pick = input("    Pick one (empty to abort): ").strip()
+        if not pick:
+            return None
+        if pick.isdigit() and 1 <= int(pick) <= len(cands):
+            return cands[int(pick) - 1]
+
 
 HEADER_FMT = "<6sBBHHHHIBBBBII"
 HEADER_SIZE = 32
@@ -171,7 +344,7 @@ def write_badpages(out_path, bad_pages, total_pages):
                    "bad_pages": bad_pages}, f)
 
 
-def write_metadata(out_path, geom, byte_count, result=None):
+def write_metadata(out_path, geom, byte_count, result=None, profile=None):
     """Write the <out_path>.meta.json sidecar next to the dump."""
     meta = {
         "geometry": geom,
@@ -183,6 +356,8 @@ def write_metadata(out_path, geom, byte_count, result=None):
         "bytes_received": byte_count,
         "timestamp": datetime.datetime.now().isoformat(),
     }
+    if profile is not None:
+        meta["profile"] = profile
     if result is not None:
         meta["bad_page_count"] = len(result.bad_pages)
         meta["truncated"] = result.truncated
@@ -197,16 +372,67 @@ def parse_args(argv=None):
     ap.add_argument("--port", type=int, help="TCP port (default 3333).")
     ap.add_argument("--out-dir", dest="out_dir",
                     help="Directory for dumps (default target/).")
+    ap.add_argument("--chip", help="Push this chip's profile from db/ before dumping "
+                    "(the device still checks it against the chip's ID). Remembered "
+                    "for this ID in dump.config.json.")
     return ap.parse_args(argv)
+
+
+def prepare_profile(sock, chip, saved):
+    """Run the pre-dump session. Returns the profile identity for the meta
+    sidecar, or None for pre-v4 firmware. `saved` is dump.config.json; a chip
+    picked by --chip or at the prompt is remembered there for this ID."""
+    from tools import chipdb
+    info = query_info(sock)
+    if info is None:
+        if chip:
+            raise SessionError("I", "this firmware predates profile push; "
+                               "drop --chip or flash v4")
+        print("[*] Pre-v4 firmware (no 'I' reply): dumping with its built-in table.")
+        return None
+    ident = f"0x{info['mfr']:02X} 0x{info['dev']:02X} 0x{info['dev2']:02X}"
+    print(f"[*] Device detected {ident}: {info['state']}"
+          + (f" ({info['name']})" if info["state"] in ("resident", "pushed") else ""))
+
+    try:
+        flat, remember = resolve_profile(info, chip, saved,
+                                         ask_candidate if sys.stdin.isatty() else None)
+    except chipdb.AmbiguousId as e:
+        raise SessionError("I", f"{e}; pick one with --chip NAME") from None
+    except chipdb.ChipDBError as e:
+        raise SessionError("I", str(e)) from None
+    except ImportError:
+        raise SessionError("I", "the chip database needs PyYAML: pip install pyyaml") from None
+
+    if flat is None:
+        if info["state"] in ("unknown", "ambiguous"):
+            print("[!] Chip not in the database: the device will dump with the geometry "
+                  "set in its serial menu.")
+        return {"name": info["name"], "source": info["state"]}
+
+    blob = chipdb.pack_blob(flat)
+    print(f"[*] Pushing profile {flat['name']} ({len(blob)} B, CRC "
+          f"0x{struct.unpack('<I', blob[-4:])[0]:08X})...")
+    push_and_arm(sock, flat, blob, info)
+    print(f"[+] Device verified and armed {flat['name']}.")
+    if remember:
+        saved["chips"] = dict(saved.get("chips") or {},
+                              **{id_key(info["mfr"], info["dev"]): flat["name"]})
+        save_config(CONFIG_PATH, saved)
+    return {"name": flat["name"], "source": "pushed", "family": flat["family"],
+            "profile": flat["profile"], "ecc_scheme": flat["ecc_scheme"],
+            "schema_ver": chipdb.SCHEMA_VER}
 
 
 def main(argv=None):
     args = parse_args(argv)
     cli = {"ip": args.ip, "port": args.port, "out_dir": args.out_dir}
-    cfg = resolve_config(cli, load_config())
+    saved = load_config()
+    cfg = resolve_config(cli, saved)
     # Any flag the user passed is remembered, so next run needs no flags.
     if any(v is not None for v in cli.values()):
-        save_config(CONFIG_PATH, cfg)
+        saved = dict(saved, **cfg)
+        save_config(CONFIG_PATH, saved)
         print(f"[*] Saved connection settings to {os.path.basename(CONFIG_PATH)}")
     ip, port, out_dir = cfg["ip"], cfg["port"], cfg["out_dir"]
 
@@ -224,10 +450,24 @@ def main(argv=None):
         print(f"[!] Could not connect: {e}")
         sys.exit(1)
 
-    print("[+] Connected! Sending 'GO' trigger...")
-    sock.sendall(b'G')
+    print("[+] Connected!")
+    try:
+        profile = prepare_profile(sock, args.chip, saved)
+    except (SessionError, IOError, ValueError) as e:
+        print(f"[!] {e}")
+        sock.close()
+        sys.exit(1)
 
-    geom = parse_header(recv_exact(sock, HEADER_SIZE))
+    print("[*] Sending 'GO' trigger...")
+    sock.sendall(b'G')
+    first = recv_exact(sock, 4)
+    if first == RESP_MAGIC:
+        _, status, _ = read_response(sock, first)
+        print(f"[!] Device refused the dump: {prf_error_name(status)}")
+        sock.close()
+        sys.exit(1)
+
+    geom = parse_header(first + recv_exact(sock, HEADER_SIZE - 4))
     total_bytes = geom["total_bytes"]
     total_mb = total_bytes / (1024 * 1024)
     page_size = geom["page_size"]
@@ -257,7 +497,7 @@ def main(argv=None):
         with open(out_file, 'wb') as f:
             res = receive_pages(sock, geom, f, progress)
 
-        write_metadata(out_file, geom, res.bytes_received, res)
+        write_metadata(out_file, geom, res.bytes_received, res, profile)
         el = time.time() - start_time
         avg = res.bytes_received / el / (1024 * 1024) if el > 0 else 0
         print(f"\n[*] Dump complete! Saved to {out_file}")
