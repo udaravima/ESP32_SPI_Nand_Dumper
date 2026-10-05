@@ -29,7 +29,7 @@ static void reseal(uint8_t *blob) {
 
 // ---- golden blob ------------------------------------------------------------
 void test_struct_size_matches_host_layout(void) {
-  TEST_ASSERT_EQUAL_UINT(120, sizeof(active_profile_t));
+  TEST_ASSERT_EQUAL_UINT(128, sizeof(active_profile_t));
   TEST_ASSERT_EQUAL_UINT(NAND_PROFILE_BLOB_SIZE, sizeof(GOLDEN_DS35Q1GA));
 }
 
@@ -110,8 +110,8 @@ static nand_prf_err_t unpack_edited(void (*edit)(uint8_t *), bool reseal_it,
 }
 static void flip_body(uint8_t *b) { b[6 + 30] ^= 0x01; }
 static void bad_magic(uint8_t *b) { b[0] = 'X'; }
-static void bad_ver(uint8_t *b) { b[3] = 2; }
-static void bad_len(uint8_t *b) { b[4] = 119; }
+static void bad_ver(uint8_t *b) { b[3] = NAND_PROFILE_SCHEMA_VER + 1; }
+static void bad_len(uint8_t *b) { b[4] = NAND_PROFILE_SIZE - 1; }
 static void wide_mask(uint8_t *b) { b[6 + 53] = 0x1F; }                 // ecc_mask
 static void bad_sev(uint8_t *b) { b[6 + 54 + 15] = 4; }                 // ecc_map[15]
 static void long_name(uint8_t *b) { memset(b + 6, 'A', 24); }
@@ -208,8 +208,13 @@ void test_find_uses_dev2_and_never_guesses(void) {
   t[0].id_flags = t[1].id_flags = NAND_PROFILE_ID_HAS_DEV2;
   t[0].id_dev2 = 0x11; t[1].id_dev2 = 0x22;
   TEST_ASSERT_EQUAL_PTR(&t[1], nand_profile_find(t, 2, 0xE5, 0x71, 0x22, &e));
+  // A dev2 neither declares: neither is this chip.
   TEST_ASSERT_NULL(nand_profile_find(t, 2, 0xE5, 0x71, 0x33, &e));
-  TEST_ASSERT_EQUAL_INT(NAND_PRF_E_AMBIGUOUS_ID, e);
+  TEST_ASSERT_EQUAL_INT(NAND_PRF_E_UNKNOWN_ID, e);
+  // A lone entry that declares dev2 still needs it to match (a W25Q256 must
+  // not resolve to the W25Q128 entry that shares its first two ID bytes).
+  TEST_ASSERT_NULL(nand_profile_find(t, 1, 0xE5, 0x71, 0x22, &e));
+  TEST_ASSERT_EQUAL_INT(NAND_PRF_E_UNKNOWN_ID, e);
 }
 
 void test_pick_honours_saved_choice_only_for_its_id(void) {
@@ -272,6 +277,116 @@ void test_manual_profile_is_valid_and_generic(void) {
   TEST_ASSERT_EQUAL_INT(NAND_ECC_UNCORRECTABLE, nand_profile_ecc_severity(&p, 0x20));
 }
 
+// ---- SPI NOR (schema v2) ---------------------------------------------------------
+void test_golden_nor_blobs_unpack_and_equal_resident(void) {
+  active_profile_t p;
+  TEST_ASSERT_EQUAL_INT(NAND_PRF_OK,
+      nand_profile_unpack(GOLDEN_W25Q128_V, sizeof(GOLDEN_W25Q128_V), MAX_PAGE, &p));
+  TEST_ASSERT_EQUAL_MEMORY(resident("W25Q128.V"), &p, sizeof(p));
+  TEST_ASSERT_EQUAL_UINT8(CHIP_FAMILY_SPI_NOR, p.family);
+  TEST_ASSERT_EQUAL_HEX8(0xEF, p.id_mfr);
+  TEST_ASSERT_EQUAL_HEX8(0x40, p.id_dev);
+  TEST_ASSERT_EQUAL_HEX8(0x18, p.id_dev2);
+  TEST_ASSERT_EQUAL_HEX8(NAND_PROFILE_ID_HAS_DEV2, p.id_flags);
+  TEST_ASSERT_EQUAL_UINT32(4096, p.page_size);          // one read unit
+  TEST_ASSERT_EQUAL_UINT32(0, p.spare_size);
+  TEST_ASSERT_EQUAL_UINT32(16u << 20, nand_profile_bytes(&p));
+  TEST_ASSERT_EQUAL_HEX8(0x03, p.op_read_cache);
+  TEST_ASSERT_EQUAL_HEX8(0x6B, p.op_read_cache_x4);
+  TEST_ASSERT_EQUAL_HEX8(0x05, p.op_get_feat);
+  TEST_ASSERT_EQUAL_HEX8(0x00, p.op_page_read);         // no array -> cache step
+  TEST_ASSERT_EQUAL_UINT8(NAND_ID_METHOD_NONE, p.id_method);
+  TEST_ASSERT_EQUAL_UINT8(3, p.id_n_bytes);
+  TEST_ASSERT_EQUAL_UINT8(3, p.addr_bytes);
+  TEST_ASSERT_EQUAL_UINT8(NOR_ADDR4_NONE, p.addr4_mode);
+  TEST_ASSERT_EQUAL_UINT8(0, p.dummy_x1);
+  TEST_ASSERT_EQUAL_UINT8(8, p.dummy_x4);
+  TEST_ASSERT_EQUAL_UINT8(5, p.qer);                    // nor-winbond: SR2 bit 1 via 35h
+
+  TEST_ASSERT_EQUAL_INT(NAND_PRF_OK,
+      nand_profile_unpack(GOLDEN_MX25L25635F, sizeof(GOLDEN_MX25L25635F), MAX_PAGE, &p));
+  TEST_ASSERT_EQUAL_MEMORY(resident("MX25L25635F"), &p, sizeof(p));
+  TEST_ASSERT_EQUAL_UINT8(4, p.addr_bytes);
+  TEST_ASSERT_EQUAL_UINT8(NOR_ADDR4_NATIVE, p.addr4_mode);
+  TEST_ASSERT_EQUAL_HEX8(0x13, p.op_read_cache);
+  TEST_ASSERT_EQUAL_HEX8(0x6C, p.op_read_cache_x4);
+  TEST_ASSERT_EQUAL_UINT8(2, p.qer);                    // nor-macronix: SR1 bit 6
+}
+
+void test_nor_checks_fail_closed(void) {
+  const active_profile_t *w = resident("W25Q128.V");
+  active_profile_t p;
+  struct { void (*edit)(active_profile_t *); nand_prf_err_t want; } cases[] = {
+    { [](active_profile_t *q) { q->spare_size = 64; }, NAND_PRF_E_GEOMETRY },
+    { [](active_profile_t *q) { q->bbm_len = 1; }, NAND_PRF_E_STRUCTURE },      // NAND field
+    { [](active_profile_t *q) { q->ecc_mask = 0x3; }, NAND_PRF_E_STRUCTURE },
+    { [](active_profile_t *q) { q->addr_bytes = 5; }, NAND_PRF_E_STRUCTURE },
+    { [](active_profile_t *q) { q->addr4_mode = NOR_ADDR4_ENTER; }, NAND_PRF_E_STRUCTURE },
+    { [](active_profile_t *q) { q->qer = 7; }, NAND_PRF_E_STRUCTURE },
+    { [](active_profile_t *q) { q->dummy_x4 = 40; }, NAND_PRF_E_STRUCTURE },
+    { [](active_profile_t *q) { q->id_method = NAND_ID_METHOD_DUMMY; }, NAND_PRF_E_STRUCTURE },
+    { [](active_profile_t *q) { q->op_read_cache = 0; }, NAND_PRF_E_STRUCTURE },
+    { [](active_profile_t *q) { q->family = CHIP_FAMILY_COUNT; }, NAND_PRF_E_STRUCTURE },
+    { [](active_profile_t *q) { q->family = CHIP_FAMILY_I2C_EEPROM; }, NAND_PRF_E_STRUCTURE },
+    { [](active_profile_t *q) { q->_pad1[2] = 1; }, NAND_PRF_E_STRUCTURE },
+    { [](active_profile_t *q) { q->page_size = 3000; }, NAND_PRF_E_GEOMETRY },
+    { [](active_profile_t *q) { q->total_blocks = 512; }, NAND_PRF_E_GEOMETRY },  // 32 MiB, 3-byte
+    { [](active_profile_t *q) { q->page_size = 16384; q->pages_per_block = 4; },
+      NAND_PRF_E_PAGE_TOO_BIG },
+  };
+  for (unsigned i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+    p = *w;
+    cases[i].edit(&p);
+    TEST_ASSERT_EQUAL_STRING(nand_prf_err_name(cases[i].want),
+                             nand_prf_err_name(nand_profile_check(&p, MAX_PAGE)));
+  }
+  // NOR tail bytes on a NAND profile are refused too.
+  p = *resident("DS35Q1GA");
+  p.addr_bytes = 3;
+  TEST_ASSERT_EQUAL_INT(NAND_PRF_E_STRUCTURE, nand_profile_check(&p, MAX_PAGE));
+}
+
+void test_manual_nor_profile(void) {
+  active_profile_t p;
+  nand_profile_manual_nor(&p, 64 * 1024);
+  TEST_ASSERT_EQUAL_INT(NAND_PRF_OK, nand_profile_check(&p, MAX_PAGE));
+  TEST_ASSERT_EQUAL_UINT32(64 * 1024, nand_profile_bytes(&p));
+  TEST_ASSERT_EQUAL_UINT8(3, p.addr_bytes);
+  nand_profile_manual_nor(&p, 64u << 20);
+  TEST_ASSERT_EQUAL_INT(NAND_PRF_OK, nand_profile_check(&p, MAX_PAGE));
+  TEST_ASSERT_EQUAL_UINT8(4, p.addr_bytes);
+  TEST_ASSERT_EQUAL_UINT8(NOR_ADDR4_ENTER, p.addr4_mode);
+}
+
+// EEPROM blobs packed by chipdb.py unpack to the resident entries, with the
+// address bits carried outside the word address (I2C device address, SPI
+// opcode bit 3) in the two former pad bytes.
+void test_golden_eeprom_blobs_unpack_and_equal_resident(void) {
+  active_profile_t p;
+  TEST_ASSERT_EQUAL_INT(NAND_PRF_OK,
+      nand_profile_unpack(GOLDEN_24CM02, sizeof(GOLDEN_24CM02), MAX_PAGE, &p));
+  TEST_ASSERT_EQUAL_MEMORY(resident("24CM02"), &p, sizeof(p));
+  TEST_ASSERT_EQUAL_UINT8(CHIP_FAMILY_I2C_EEPROM, p.family);
+  TEST_ASSERT_EQUAL_UINT32(256u << 10, nand_profile_bytes(&p));
+  TEST_ASSERT_EQUAL_UINT8(2, p.addr_bytes);
+  TEST_ASSERT_EQUAL_UINT8(2, p.dev_addr_bits);
+  TEST_ASSERT_EQUAL_UINT8(0, p.dev_addr_shift);
+  TEST_ASSERT_EQUAL_UINT8(0, p.id_n_bytes);
+  TEST_ASSERT_EQUAL_HEX8(0x00, p.op_read_cache);
+
+  TEST_ASSERT_EQUAL_INT(NAND_PRF_OK,
+      nand_profile_unpack(GOLDEN_25xx040, sizeof(GOLDEN_25xx040), MAX_PAGE, &p));
+  TEST_ASSERT_EQUAL_MEMORY(resident("25xx040"), &p, sizeof(p));
+  TEST_ASSERT_EQUAL_UINT8(CHIP_FAMILY_SPI_EEPROM, p.family);
+  TEST_ASSERT_EQUAL_UINT32(512, nand_profile_bytes(&p));
+  TEST_ASSERT_EQUAL_HEX8(0x03, p.op_read_cache);
+  TEST_ASSERT_EQUAL_HEX8(0x05, p.op_get_feat);
+  TEST_ASSERT_EQUAL_HEX8(0x00, p.op_set_feat);
+  TEST_ASSERT_EQUAL_UINT8(1, p.addr_bytes);
+  TEST_ASSERT_EQUAL_UINT8(1, p.dev_addr_bits);
+  TEST_ASSERT_EQUAL_UINT8(3, p.dev_addr_shift);
+}
+
 int main(int, char **) {
   UNITY_BEGIN();
   RUN_TEST(test_struct_size_matches_host_layout);
@@ -290,5 +405,9 @@ int main(int, char **) {
   RUN_TEST(test_bbm_uses_profile_width_and_offset);
   RUN_TEST(test_bbm_pages);
   RUN_TEST(test_manual_profile_is_valid_and_generic);
+  RUN_TEST(test_golden_nor_blobs_unpack_and_equal_resident);
+  RUN_TEST(test_nor_checks_fail_closed);
+  RUN_TEST(test_manual_nor_profile);
+  RUN_TEST(test_golden_eeprom_blobs_unpack_and_equal_resident);
   return UNITY_END();
 }

@@ -1,0 +1,185 @@
+# SPI serial EEPROMs and FRAMs (25-series), written by hand from the vendors'
+# datasheets (size, address width, page-write size) and the Linux at25
+# binding's address-width rules (Documentation/devicetree/bindings/eeprom/
+# at25.yaml, GPL-2.0: 8, 9 = A8 in opcode bit 3, 16 or 24 bits). Not yet
+# checked on hardware. `page_write` is informational (0 for FRAM).
+
+"25xx010":
+  family: spi-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 128, addr_bytes: 1, dev_addr_bits: 0, dev_addr_shift: 0}
+  page_write: 16
+  vcc_mv: 3300
+  resident: true
+  aliases: ["25LC010A", "25AA010A", "AT25010B", "M95010", "CAT25010"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/Documentation/devicetree/bindings/eeprom/at25.yaml"
+  datasheet: "Vendor datasheets of 25LC010A, 25AA010A, AT25010B"
+
+"25xx020":
+  family: spi-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 256, addr_bytes: 1, dev_addr_bits: 0, dev_addr_shift: 0}
+  page_write: 16
+  vcc_mv: 3300
+  resident: true
+  aliases: ["25LC020A", "25AA020A", "AT25020B", "M95020", "CAT25020"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/Documentation/devicetree/bindings/eeprom/at25.yaml"
+  datasheet: "Vendor datasheets of 25LC020A, 25AA020A, AT25020B"
+
+"25xx040":
+  family: spi-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 512, addr_bytes: 1, dev_addr_bits: 1, dev_addr_shift: 3}
+  page_write: 16
+  vcc_mv: 3300
+  resident: true
+  aliases: ["25LC040A", "25AA040A", "AT25040B", "M95040", "CAT25040"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/Documentation/devicetree/bindings/eeprom/at25.yaml"
+  datasheet: "Vendor datasheets of 25LC040A, 25AA040A, AT25040B"
+  notes: "A8 is bit 3 of the opcode (READ 0Bh for the upper half)"
+
+"25xx080":
+  family: spi-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 1024, addr_bytes: 2, dev_addr_bits: 0, dev_addr_shift: 0}
+  page_write: 16
+  vcc_mv: 3300
+  resident: true
+  aliases: ["25LC080", "25AA080", "AT25080B", "M95080", "CAT25080"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/Documentation/devicetree/bindings/eeprom/at25.yaml"
+  datasheet: "Vendor datasheets of 25LC080, 25AA080, AT25080B"
+
+"25xx160":
+  family: spi-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 2048, addr_bytes: 2, dev_addr_bits: 0, dev_addr_shift: 0}
+  page_write: 16
+  vcc_mv: 3300
+  resident: true
+  aliases: ["25LC160", "25AA160", "AT25160B", "M95160", "CAT25160"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/Documentation/devicetree/bindings/eeprom/at25.yaml"
+  datasheet: "Vendor datasheets of 25LC160, 25AA160, AT25160B"
+
+"25xx320":
+  family: spi-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 4096, addr_bytes: 2, dev_addr_bits: 0, dev_addr_shift: 0}
+  page_write: 32
+  vcc_mv: 3300
+  resident: true
+  aliases: ["25LC320A", "25AA320A", "AT25320B", "M95320", "CAT25320"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/Documentation/devicetree/bindings/eeprom/at25.yaml"
+  datasheet: "Vendor datasheets of 25LC320A, 25AA320A, AT25320B"
+
+"25xx640":
+  family: spi-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 8192, addr_bytes: 2, dev_addr_bits: 0, dev_addr_shift: 0}
+  page_write: 32
+  vcc_mv: 3300
+  resident: true
+  aliases: ["25LC640A", "25AA640A", "AT25640B", "M95640", "CAT25640"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/Documentation/devicetree/bindings/eeprom/at25.yaml"
+  datasheet: "Vendor datasheets of 25LC640A, 25AA640A, AT25640B"
+
+"25xx128":
+  family: spi-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 16384, addr_bytes: 2, dev_addr_bits: 0, dev_addr_shift: 0}
+  page_write: 64
+  vcc_mv: 3300
+  resident: true
+  aliases: ["25LC128", "25AA128", "AT25128B", "M95128", "CAT25128"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/Documentation/devicetree/bindings/eeprom/at25.yaml"
+  datasheet: "Vendor datasheets of 25LC128, 25AA128, AT25128B"
+
+"25xx256":
+  family: spi-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 32768, addr_bytes: 2, dev_addr_bits: 0, dev_addr_shift: 0}
+  page_write: 64
+  vcc_mv: 3300
+  resident: true
+  aliases: ["25LC256", "25AA256", "AT25256B", "M95256", "CAT25256"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/Documentation/devicetree/bindings/eeprom/at25.yaml"
+  datasheet: "Vendor datasheets of 25LC256, 25AA256, AT25256B"
+
+"25xx512":
+  family: spi-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 65536, addr_bytes: 2, dev_addr_bits: 0, dev_addr_shift: 0}
+  page_write: 128
+  vcc_mv: 3300
+  resident: true
+  aliases: ["25LC512", "25AA512", "AT25512", "M95512"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/Documentation/devicetree/bindings/eeprom/at25.yaml"
+  datasheet: "Vendor datasheets of 25LC512, 25AA512, AT25512"
+
+"25xx1024":
+  family: spi-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 131072, addr_bytes: 3, dev_addr_bits: 0, dev_addr_shift: 0}
+  page_write: 256
+  vcc_mv: 3300
+  resident: true
+  aliases: ["25LC1024", "25AA1024", "AT25M01", "M95M01"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/Documentation/devicetree/bindings/eeprom/at25.yaml"
+  datasheet: "Vendor datasheets of 25LC1024, 25AA1024, AT25M01"
+
+"M95M02":
+  family: spi-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 262144, addr_bytes: 3, dev_addr_bits: 0, dev_addr_shift: 0}
+  page_write: 256
+  vcc_mv: 3300
+  resident: true
+  aliases: ["M95M02-DR"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/Documentation/devicetree/bindings/eeprom/at25.yaml"
+  datasheet: "Vendor datasheets of M95M02-DR"
+
+"M95M04":
+  family: spi-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 524288, addr_bytes: 3, dev_addr_bits: 0, dev_addr_shift: 0}
+  page_write: 512
+  vcc_mv: 3300
+  resident: true
+  aliases: ["M95M04-DR"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/Documentation/devicetree/bindings/eeprom/at25.yaml"
+  datasheet: "Vendor datasheets of M95M04-DR"
+
+"MB85RS64":
+  family: spi-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 8192, addr_bytes: 2, dev_addr_bits: 0, dev_addr_shift: 0}
+  page_write: 0
+  vcc_mv: 3300
+  resident: true
+  aliases: ["MB85RS64V"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/Documentation/devicetree/bindings/eeprom/at25.yaml"
+  datasheet: "Vendor datasheets of MB85RS64V"
+  notes: "FRAM: no write cycle, no pages"
+
+"MB85RS256":
+  family: spi-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 32768, addr_bytes: 2, dev_addr_bits: 0, dev_addr_shift: 0}
+  page_write: 0
+  vcc_mv: 3300
+  resident: true
+  aliases: ["MB85RS256B", "FM25V02A", "FM25W256"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/Documentation/devicetree/bindings/eeprom/at25.yaml"
+  datasheet: "Vendor datasheets of MB85RS256B, FM25V02A, FM25W256"
+  notes: "FRAM: no write cycle, no pages"
+
+"MB85RS1MT":
+  family: spi-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 131072, addr_bytes: 3, dev_addr_bits: 0, dev_addr_shift: 0}
+  page_write: 0
+  vcc_mv: 3300
+  resident: true
+  aliases: ["FM25V10"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/Documentation/devicetree/bindings/eeprom/at25.yaml"
+  datasheet: "Vendor datasheets of FM25V10"
+  notes: "FRAM: no write cycle, no pages"

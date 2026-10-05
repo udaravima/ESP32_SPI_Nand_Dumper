@@ -1,0 +1,3 @@
+# Serial EEPROMs have no vendor quirks the read path needs: no ECC, no spare
+# area, no quad mode. Every 24xx and 25xx part uses this profile.
+eeprom-generic: {}

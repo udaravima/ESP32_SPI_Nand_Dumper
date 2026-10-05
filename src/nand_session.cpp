@@ -1,5 +1,6 @@
 #include "nand_session.h"
 #include "dump_header.h"   // dump_crc32
+#include "eeprom_seq.h"    // eeprom_i2c_base, eeprom_spi_status_plausible
 #include <string.h>
 
 static void put_u16(uint8_t *p, uint16_t v) { p[0] = v; p[1] = v >> 8; }
@@ -34,7 +35,31 @@ void nand_session_begin(nand_session_t *s) {
   s->staged_crc = 0;
 }
 
-// 'I': session version, schema version, page bound, detected ID, state, name.
+// The detected ID in the view a profile of this family is checked against.
+// An EEPROM has none: its view is the presence byte (ACK mask or RDSR).
+static void detected_id(const nand_session_t *s, uint8_t family, uint8_t out[3]) {
+  if (family == CHIP_FAMILY_I2C_EEPROM || family == CHIP_FAMILY_SPI_EEPROM) {
+    out[0] = family == CHIP_FAMILY_I2C_EEPROM ? s->i2c_ack_mask : s->spi_ee_status;
+    out[1] = out[2] = 0;
+    return;
+  }
+  memcpy(out, family == CHIP_FAMILY_SPI_NOR ? s->nor_id : s->id, 3);
+}
+
+// The key interlock: is this profile's chip the one in the socket? By ID for
+// SPI NAND/NOR; by presence for an EEPROM (an I2C part must acknowledge at
+// every address it occupies, a SPI part must return a plausible status).
+static bool bound_to_socket(const nand_session_t *s, const active_profile_t *p) {
+  if (p->family == CHIP_FAMILY_I2C_EEPROM) return eeprom_i2c_base(p, s->i2c_ack_mask) >= 0;
+  if (p->family == CHIP_FAMILY_SPI_EEPROM) return eeprom_spi_status_plausible(s->spi_ee_status);
+  uint8_t det[3];
+  detected_id(s, p->family, det);
+  return nand_profile_id_matches(p, det[0], det[1], det[2]);
+}
+
+// 'I': session version, schema version, page bound, detected ID, state, name,
+// then (v2) the SPI NOR ID view and the active profile's family, then (v3) the
+// EEPROM presence bytes.
 static void do_info(nand_session_t *s, const nand_link_t *l) {
   uint8_t p[NAND_INFO_SIZE] = {0};
   p[0] = NAND_SESSION_VER;
@@ -44,6 +69,10 @@ static void do_info(nand_session_t *s, const nand_link_t *l) {
   p[9] = (uint8_t)s->chip_state;
   if (s->active) memcpy(p + 10, s->active->name, sizeof(s->active->name));
   p[10 + 23] = '\0';
+  memcpy(p + 34, s->nor_id, 3);
+  p[37] = s->active ? s->active->family : (uint8_t)CHIP_FAMILY_SPI_NAND;
+  p[38] = s->i2c_ack_mask;
+  p[39] = s->spi_ee_status;
   reply(l, NAND_CMD_INFO, NAND_PRF_OK, p, sizeof(p));
 }
 
@@ -57,8 +86,9 @@ static void echo(const nand_session_t *s, const active_profile_t *p, uint32_t cr
   put_u32(out + 36, p->total_blocks);
   out[40] = p->planes;
   out[41] = p->id_mfr; out[42] = p->id_dev; out[43] = p->id_dev2; out[44] = p->id_flags;
-  memcpy(out + 45, s->id, 3);
+  detected_id(s, p->family, out + 45);
   put_u32(out + 48, crc);
+  out[52] = p->family;
 }
 
 static nand_sess_action_t do_push(nand_session_t *s, const nand_link_t *l) {
@@ -100,7 +130,7 @@ static nand_sess_action_t do_push(nand_session_t *s, const nand_link_t *l) {
   echo(s, &p, crc, out);
 
   // The key interlock: the profile is bound to the silicon in the socket.
-  if (!nand_profile_id_matches(&p, s->id[0], s->id[1], s->id[2])) {
+  if (!bound_to_socket(s, &p)) {
     reply(l, NAND_CMD_PUSH, NAND_PRF_E_ID_MISMATCH, out, sizeof(out));
     return NAND_SESS_MORE;
   }

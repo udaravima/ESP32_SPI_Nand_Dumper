@@ -13,6 +13,8 @@ firmware or add a chip, see the [Developer Guide](DEVELOPER_GUIDE.md).
 - [The config menu](#the-config-menu)
 - [ECC: raw vs corrected](#ecc-raw-vs-corrected)
 - [Read modes: single and quad](#read-modes-single-and-quad)
+- [SPI NOR chips](#spi-nor-chips)
+- [Serial EEPROMs (24xx, 25xx)](#serial-eeproms-24xx-25xx)
 - [Running a dump](#running-a-dump)
 - [The metadata sidecar](#the-metadata-sidecar)
 - [Post-processing](#post-processing)
@@ -22,7 +24,7 @@ firmware or add a chip, see the [Developer Guide](DEVELOPER_GUIDE.md).
 
 ## What this tool does
 
-It reads a SPI NAND flash chip page by page and streams the raw contents over
+It reads a SPI NAND or SPI NOR flash chip page by page and streams the raw contents over
 WiFi/TCP to your PC. It **auto-detects** the chip from its JEDEC ID, so geometry
 (page size, block count, spare size) is filled in for you. The raw stream
 includes each page's spare/OOB area; a post-processing step strips that to a
@@ -172,6 +174,68 @@ via quad and via single and compares them. If they differ (bad wiring, or a chip
 whose quad path isn't supported), it prints a warning and **falls back to single
 x1** automatically. So selecting quad can never silently corrupt a dump — worst
 case it quietly runs single.
+
+## SPI NOR chips
+
+The same board and wiring read SPI NOR flash (W25Q, MX25L, GD25Q and the many
+other 8-pin "25-series" parts). The firmware tells the two families apart from
+how the chip answers the read-ID command, so there is nothing to select for a
+known chip. What differs for NOR:
+
+- There is no spare area and no on-die ECC, so **[E]** and the bad-block marker
+  do not apply, and the raw dump already is the flash image. `ecc_stripper.py`
+  just copies it.
+- The dump is sent in 4 KiB units; the header's flag bit 4 marks a NOR dump and
+  `dump.py` names the file `nor_raw_dump_<time>.bin`.
+- Chips above 16 MiB are read with 4-byte addresses. Parts that use the `B7h`
+  mode switch are put back into 3-byte mode when the dump ends.
+- A chip that is neither in the firmware nor in `db/` can still be dumped if it
+  carries an SFDP table (most parts since about 2011): the firmware reads its
+  size and read commands from the chip itself and shows it as `SFDP-XXYYZZ`.
+- Otherwise the menu shows **[F] Family** to switch an unknown chip to NOR and
+  **[8] Size** to enter its size in KiB.
+- Quad reads need the chip's QE bit, which the firmware never writes. If QE is
+  clear the menu says so and the dump runs single; WiFi limits the speed
+  anyway.
+- 1.8 V NOR parts (`...W` suffixes such as W25Q128JW) need a level shifter, as
+  with NAND. The firmware warns when the profile says so.
+
+## Serial EEPROMs (24xx, 25xx)
+
+The same SOIC-8 clip reads serial EEPROMs: I2C **24xx** parts (24C01 up to
+24CM02, also sold as AT24C, 24LC/24AA, M24C, CAT24C, BR24G) and SPI **25xx**
+parts and FRAMs (25LC/25AA, AT25, M95, MB85RS). `python3 tools/chipdb.py --list
+--family i2c-eeprom` (or `spi-eeprom`) lists them. Reading only; nothing is
+ever written.
+
+**No wiring change.** A 24xx has the same footprint as a 25xx, so in the clip
+its SDA lands on D0 (MOSI) and SCL on CLK. In I2C mode the firmware frees the
+SPI bus, runs I2C on those two pins, and only weakly biases the others: A0
+(on CS) and A2 (on D2) up, A1 (on D1) down, and WP (on D3) up, which
+write-protects the part. The internal pull-ups are weak; for 400 kHz or long
+wires add 4.7 kΩ from SDA and SCL to 3V3.
+
+**EEPROMs have no ID**, so you name the part:
+
+- At boot, when nothing answers read-ID, the firmware probes for an EEPROM:
+  an I2C scan of 0x50..0x57 and the SPI status register. If one answers, the
+  menu switches to that family and shows **[P] Pick part**, marking the 24xx
+  parts whose address pattern does not fit the scan. The pick is saved and
+  reused on the next boot if the part still answers.
+- **[F] Family** cycles NAND, NOR, I2C EEPROM and SPI EEPROM; **[R]** rescans;
+  for I2C, **[4]** toggles 100/400 kHz.
+- Or pick from the PC: `python3 dump.py --chip AT24C256` (any alias works).
+  The device still checks the part is there: an I2C part must answer at every
+  address it occupies (a 24C16 at all eight), a SPI part must return a sane
+  status. With no `--chip`, `dump.py` prints the parts that fit the scan.
+
+**Pick the right size.** The part cannot tell the firmware its size. A wrong
+pick gives a wrong dump (wrapped or short), but not a write: the firmware never
+ends an address with a STOP, and WP is held high in the clip. Read the marking
+on the package; `24C02`, `24LC256`, `AT24C512` and so on name the size in kbit.
+
+The dump is written as `eeprom_raw_dump_<time>.bin`; it is the exact memory
+image, with no spare area to strip.
 
 ## Running a dump
 

@@ -52,10 +52,11 @@ def test_initializer_has_one_value_per_struct_byte_group(db):
     arrays = re.findall(r"\{([^{}]*)\}", body)
     scalars = re.sub(r"\{[^{}]*\}", "", body).replace('"DS35Q1GA"', "N").split(",")
     scalars = [s for s in (x.strip() for x in scalars) if s and s != "}"]
-    layout = [f for f, fmt in chipdb.LAYOUT if fmt not in ("16s", "8H")]
-    # +1: the explicit _pad0 is in LAYOUT as "x", the trailing _pad1 is an array
+    layout = [f for f, fmt in chipdb.LAYOUT if fmt not in ("16s", "8H")
+              and not fmt.endswith("x")]
     assert len(scalars) == len(layout)
-    assert [len(a.split(",")) for a in arrays] == [16, 8, 8, 2]
+    # ecc_map, oob_free, oob_ecc, then the trailing _pad1 as `{ 0 }`
+    assert [len(a.split(",")) for a in arrays] == [16, 8, 8, 1]
 
 
 def test_bad_chip_fails_generation(db):

@@ -36,12 +36,17 @@ be verified on real silicon.
 | [`sys_info_esp.cpp`](../src/sys_info_esp.cpp) | `sys_info_report()` / `sys_free_dma_bytes()` — runtime chip/heap query | ❌ hardware |
 | [`board_pins.h`](../src/board_pins.h) | Per-target pins + `NAND_SPI_HOST` | — macros |
 | [`nand_seq.h`](../src/nand_seq.h) / [`.cpp`](../src/nand_seq.cpp) | Read-path sequencing (PAGE READ, READ FROM CACHE, READ ID, plane-select column) over a bus callback; verified read with quad → single fallback | ✅ host-testable |
-| [`nand_driver.h`](../src/nand_driver.h) / [`.cpp`](../src/nand_driver.cpp) | SPI transactions: reset, feature regs, page read, cache read, ECC toggle, verify, quad self-test | ❌ hardware |
+| [`nand_driver.h`](../src/nand_driver.h) / [`.cpp`](../src/nand_driver.cpp) | SPI transactions: reset, feature regs, page read, cache read, ECC toggle, verify, quad self-test; `nand_spi_xfer` for the NOR driver | ❌ hardware |
+| [`nor_seq.h`](../src/nor_seq.h) / [`.cpp`](../src/nor_seq.cpp) | SPI NOR read sequencing (03h/6Bh, 4-byte modes, QE read-back, SFDP read) over a bus callback; same verified read as NAND | ✅ host-testable |
+| [`sfdp.h`](../src/sfdp.h) / [`.cpp`](../src/sfdp.cpp) | JESD216 SFDP/BFPT parser and profile builder for NOR chips not in the table | ✅ host-testable |
+| [`chip_detect.h`](../src/chip_detect.h) / [`.cpp`](../src/chip_detect.cpp) | Resolves the NAND and NOR views of the ID against the resident table, ambiguity across families included | ✅ host-testable |
+| [`nor_driver.h`](../src/nor_driver.h) / [`.cpp`](../src/nor_driver.cpp) | Binds `nor_seq` to the SPI bus; quad self-test | ❌ hardware |
 | [`wifi_transport.h`](../src/wifi_transport.h) / [`.cpp`](../src/wifi_transport.cpp) | WiFi connect + TCP stream | ❌ hardware |
 | [`main.cpp`](../src/main.cpp) | Boot flow, config menu, dump loop, header emission | ❌ hardware |
 
-**Boot flow** (`main.cpp` → `setup()`): bring SPI up at 1 MHz → read `9Fh` →
-`nand_profile_find` in the resident table → copy it into the active profile and
+**Boot flow** (`main.cpp` → `setup()`): bring SPI up at 1 MHz → read `9Fh` twice
+(SPI NAND view with a dummy byte, SPI NOR view after `ABh`) → `chip_detect_resident`
+in the resident table, falling back to SFDP for an unknown NOR ID → copy it into the active profile and
 pre-fill geometry (unknown chip: a manual profile) → run the menu → apply the
 profile, ECC and read mode →
 (if quad) self-test with fallback → allocate the page buffer to the real page
@@ -68,8 +73,13 @@ The Python entry points all guard their side effects behind `if __name__ ==
 vendor profiles and chips (design:
 `docs/superpowers/specs/2026-08-23-vendor-profile-architecture-design.md`).
 [`tools/chipdb.py`](../tools/chipdb.py) is the only place the layers are
-resolved; it flattens each chip into the 120-byte `active_profile_t` the device
-runs on. [`tools/gen_profiles.py`](../tools/gen_profiles.py) writes every
+resolved; it flattens each chip into the 128-byte `active_profile_t` (schema v2)
+the device runs on. One layout serves SPI NAND and SPI NOR: a `family` byte says
+which, and the NOR tail (address width, 4-byte mode, dummy cycles, QER) is zero
+on a NAND profile (`docs/superpowers/specs/2026-10-05-spi-nor-design.md`).
+SPI NOR chips are imported from flashrom by
+[`tools/import_flashrom.py`](../tools/import_flashrom.py) into
+`db/chips/spi-nor/flashrom-*.yml`. [`tools/gen_profiles.py`](../tools/gen_profiles.py) writes every
 `resident: true` chip into `src/nand_profiles_generated.h`. It runs:
 
 - **As a PlatformIO pre-hook** — `extra_scripts = pre:tools/gen_profiles.py` in
@@ -120,8 +130,8 @@ Each TCP connection is a short command session
 
 | Command | Payload | Reply |
 |---|---|---|
-| `'I'` | none | info: session ver u8, schema ver u8, max page u32, detected ID[3], state u8 (0 resident, 1 unknown, 2 ambiguous, 3 pushed), active profile name[24] |
-| `'P'` | a 130-byte `PRF` blob (`tools/chipdb.py --blob`) | echo: name[24], page/spare/ppb/blocks u32, planes u8, expected ID[3] + id_flags, detected ID[3], blob CRC32 |
+| `'I'` | none | info: session ver u8, schema ver u8, max page u32, detected ID[3] (SPI NAND view), state u8 (0 resident, 1 unknown, 2 ambiguous, 3 pushed, 4 sfdp), active profile name[24], then in session v2: SPI NOR ID view[3], active family u8 (0 NAND, 1 NOR, 2 I2C EEPROM, 3 SPI EEPROM), then in session v3: I2C ACK mask u8 (bit i = 0x50 + i), SPI EEPROM status u8. 40 bytes (v2: 38, v1: 34). State 5 is `picked` (an EEPROM named by the user) |
+| `'P'` | a 138-byte `PRF` blob (`tools/chipdb.py --blob`) | echo: name[24], page/spare/ppb/blocks u32, planes u8, expected ID[3] + id_flags, detected ID[3] (in the profile family's view; for an EEPROM the presence byte it compared, then two zeros), blob CRC32, family u8 (v2). 53 bytes (v1: 52) |
 | `'A'` | the staged blob's CRC32 (u32) | empty |
 | `'G'` | none | the 32-byte dump header and the page stream (below) |
 
@@ -131,7 +141,7 @@ Every reply to `I`/`P`/`A`, and a refused `G`, is one frame:
 
 A push is **fail-closed and two-phase**. `P` runs the framing, structure and
 geometry checks, then the ID cross-check against the chip the device read. Only
-then is the profile *staged*, and the device echoes it back. `dump.py` compares
+then is the profile *staged*, and the device echoes it back. A serial EEPROM has no ID, so its profile is bound by presence instead: an I2C part must acknowledge at every address it occupies, a SPI part must return a plausible status register. `dump.py` compares
 the echo field by field with what it sent, and only then sends `A` with the
 blob's CRC, which makes the staged profile live. A failed push discards the
 profile and anything staged before it; an `A` with the wrong CRC disarms; a `G`
@@ -154,7 +164,7 @@ little-endian header**, then the page stream.
 |---|---|---|
 | 0 | 6 | magic `"NANDMP"` |
 | 6 | 1 | proto version (`2`) |
-| 7 | 1 | flags: bit0 ECC on, bit1 quad, bit2 verify, bit3 per-page CRC |
+| 7 | 1 | flags: bit0 ECC on, bit1 quad, bit2 verify, bit3 per-page CRC, bit4 SPI NOR (pages are 4 KiB read units, spare 0) |
 | 8 | 2 | page_size |
 | 10 | 2 | spare_size |
 | 12 | 2 | pages_per_block |
@@ -224,6 +234,8 @@ What each layer covers:
   `test/test_sim` runs the real read-path sequencer (`nand_seq`) against a
   simulated multi-plane NAND (`sim_nand.h`, one cache register per plane), so
   plane-select and addressing mistakes fail a test instead of corrupting dumps.
+  `test/test_nor` does the same for SPI NOR (`nor_seq`, the SFDP parser) against
+  `sim_nor.h`, which also fails a test on any program, erase or status write.
 - **Bench (manual, real hardware)** — SPI transactions, ECC on/off on the array,
   the quad self-test on real wiring, WiFi, and a full end-to-end dump. These
   cannot be unit-tested; the bench checklist is Task 14 of the implementation
@@ -255,4 +267,6 @@ via a `*` ignore because of their size).
 The reasoning behind these decisions is captured in:
 
 - Spec: [`superpowers/specs/2026-08-15-nand-dumper-generalization-design.md`](superpowers/specs/2026-08-15-nand-dumper-generalization-design.md)
+- Spec: [`superpowers/specs/2026-10-05-spi-nor-design.md`](superpowers/specs/2026-10-05-spi-nor-design.md) (SPI NOR, profile schema v2, session v2)
+- Spec: [`superpowers/specs/2026-10-05-eeprom-design.md`](superpowers/specs/2026-10-05-eeprom-design.md) (I2C/SPI serial EEPROM, I2C in the SPI clip, session v3)
 - Plan: [`superpowers/plans/2026-08-15-nand-dumper-generalization.md`](superpowers/plans/2026-08-15-nand-dumper-generalization.md) (Task 14 is the hardware bench checklist)

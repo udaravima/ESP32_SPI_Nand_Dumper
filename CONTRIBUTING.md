@@ -1,4 +1,4 @@
-# Adding a NAND chip
+# Adding a chip
 
 Chips live in the chip database under [`db/`](db/README.md): one small YAML file
 per part in `db/chips/`, pointing at a vendor profile in `db/profiles/` and a
@@ -52,6 +52,38 @@ pull request — no C required.
 Have a v3 `chips.yml` with your own chips? Convert it once:
 `python3 tools/chips_yml_to_db.py chips.yml --profile micron`, then fill in each
 new file's `datasheet`.
+
+## Adding a SPI NOR chip
+
+Most SPI NOR chips are already in `db/chips/spi-nor/`, imported from
+[flashrom](https://github.com/flashrom/flashrom)'s chip tables. Those files are
+generated: do not edit them. To refresh them from a newer flashrom:
+
+```bash
+git clone https://github.com/flashrom/flashrom /tmp/flashrom
+python3 tools/import_flashrom.py /tmp/flashrom --dry-run -v   # what would change
+python3 tools/import_flashrom.py /tmp/flashrom
+python3 tools/chipdb.py && python3 tools/gen_profiles.py && python3 tools/gen_profiles.py --golden
+```
+
+Only facts are imported (ID, size, voltage, 4-byte addressing, flashrom's read
+test result), each with a link to the flashrom source it came from.
+
+To add or correct a chip by hand, write it in its own file under `db/chips/`
+(not in a `flashrom-*.yml` file). A hand-written chip with the same ID wins over
+the imported one on the next import:
+
+```yaml
+W25Q128JV:
+  id: {mfr: 0xEF, dev: 0x40, dev2: 0x18}   # 9Fh: manufacturer, type, capacity
+  family: spi-nor
+  profile: nor-winbond     # nor-macronix, nor-gigadevice, nor-generic
+  geometry: {size_kib: 16384}
+  addr4: none              # above 16 MiB: native, enter or enter_wren
+  vcc_mv: 3300
+  resident: true
+  datasheet: "a URL"       # or source:
+```
 
 ## Running the tests
 

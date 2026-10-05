@@ -1,6 +1,6 @@
 # ESP32 SPI NAND Dumper
 
-A chip-agnostic ESP32 tool for extracting firmware from SPI NAND flash over WiFi. It **auto-detects the chip** by its JEDEC ID, loads its geometry and vendor profile from a community-editable chip database (`db/`), and streams a raw dump over TCP. Builds for **ESP32-classic and ESP32-S3** from one source tree.
+A chip-agnostic ESP32 tool for extracting firmware from SPI NAND and SPI NOR flash over WiFi. It **auto-detects the chip** by its JEDEC ID, loads its geometry and vendor profile from a community-editable chip database (`db/`), and streams a raw dump over TCP. Builds for **ESP32-classic and ESP32-S3** from one source tree.
 
 Verified on the **Micron MT29F2G01** (2 Gbit, JEDEC `0x2C 0x24`). Adding another chip is a few lines of YAML — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
@@ -14,6 +14,8 @@ Verified on the **Micron MT29F2G01** (2 Gbit, JEDEC `0x2C 0x24`). Adding another
 ## Features
 
 - **Auto-detect by JEDEC ID** — reads `9Fh`, looks up geometry + capabilities in the compiled chip table. Unknown chips fall back to a manual-entry menu.
+- **SPI NOR too** — the same wiring reads 25-series SPI NOR flash (W25Q, MX25L, GD25Q, ...). The family is detected from the read-ID reply; 366 NOR chips come from flashrom's tables, and a chip in no table is read from its own SFDP parameters. See the [User Guide](docs/USER_GUIDE.md#spi-nor-chips).
+- **Serial EEPROMs too** — I2C 24xx (24C01 .. 24CM02) and SPI 25xx/FRAM parts, in the same SOIC-8 clip (the firmware runs I2C on the SPI pins). They have no ID, so you pick the part in the menu or with `dump.py --chip AT24C256`; the device checks it answers first. See the [User Guide](docs/USER_GUIDE.md#serial-eeproms-24xx-25xx).
 - **Community chip database** — `db/` (family → vendor profile → chip) is the single human-editable source; a build-time hook flattens it into the C profile table (`src/nand_profiles_generated.h`). ECC decoding, quad-enable and the bad-block marker are per-vendor data, not code.
 - **ECC selectable per dump, default OFF/raw** — raw preserves the literal stored bits + parity (reversible: you can compute the corrected image later, but never recover raw parity from a corrected dump). Toggle to ON for an immediately-mountable image.
 - **Quad (x4) with a self-test + automatic fallback** — a quad read is compared against a single read at boot; on mismatch it logs and falls back to single x1, so an unsupported quad setup never silently corrupts a dump.

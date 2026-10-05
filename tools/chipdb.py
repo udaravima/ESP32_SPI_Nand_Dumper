@@ -1,15 +1,19 @@
 """Chip database: load -> validate -> resolve -> flatten -> pack.
 
 The single home for the v4 vendor-profile model (design:
-docs/superpowers/specs/2026-08-23-vendor-profile-architecture-design.md).
-The host owns the layered DB (db/families, db/profiles, db/chips); the device
-only ever sees one flat `active_profile_t`, produced here and nowhere else.
+docs/superpowers/specs/2026-08-23-vendor-profile-architecture-design.md, SPI
+NOR: docs/superpowers/specs/2026-10-05-spi-nor-design.md, serial EEPROM:
+docs/superpowers/specs/2026-10-05-eeprom-design.md). The host owns the
+layered DB (db/families, db/profiles, db/chips); the device only ever sees one
+flat `active_profile_t`, produced here and nowhere else.
 
 The firmware's resident table is generated from here (tools/gen_profiles.py),
 so resident and pushed profiles are the same bytes.
 
-    python3 tools/chipdb.py                        # validate + list
+    python3 tools/chipdb.py                        # validate + summary
+    python3 tools/chipdb.py --list [--family spi-nor]
     python3 tools/chipdb.py --show MT29F2G01ABAGD  # flattened profile
+    python3 tools/chipdb.py --show AT24C256        # an alias works too
     python3 tools/chipdb.py --blob MT29F2G01ABAGD  # push blob as hex
 """
 import argparse
@@ -22,7 +26,8 @@ import zlib
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DB_DIR = os.path.join(REPO, "db")
 
-SCHEMA_VER = 1
+SCHEMA_VER = 2                  # v2: family byte + SPI NOR address/dummy/QER tail
+                                # (+ EEPROM dev_addr bits in two former pad bytes)
 MAX_PAGE_BUFFER = 8192          # firmware MAX_PAGE_SIZE (src/main.cpp)
 NAME_MAX = 23                   # name[24], NUL-terminated
 
@@ -49,7 +54,13 @@ SCHEMES = {
 }
 
 READ_MODES = {"single": 0, "quad": 1}
-ID_METHODS = {"addr": 0, "dummy": 1}
+ID_METHODS = {"addr": 0, "dummy": 1, "none": 2}   # none: 9Fh then data (SPI NOR)
+FAMILIES = {"spi-nand": 0, "spi-nor": 1, "i2c-eeprom": 2, "spi-eeprom": 3}
+EEPROM_FAMILIES = ("i2c-eeprom", "spi-eeprom")   # no READ ID: picked by name
+# How a SPI NOR part above 16 MiB is addressed (flat `addr4_mode`).
+ADDR4_MODES = {"none": 0, "native": 1, "enter": 2, "enter_wren": 3}
+QER_MAX = 6                     # JESD216 BFPT DWORD15 quad-enable requirement codes
+NOR_MAX_DUMMY = 32
 BBM_PAGES = {"first": 0x1, "second": 0x2, "last": 0x4}
 PLANES = (1, 2, 4)
 
@@ -70,11 +81,17 @@ LAYOUT = [
     ("ecc_map", "16s"),
     ("status2_reg", "B"), ("id_method", "B"), ("id_n_bytes", "B"),
     ("qe_addr", "B"), ("qe_bit", "B"),
-    ("read_mode", "B"), ("planes", "B"), ("_pad0", "x"),
+    ("read_mode", "B"), ("planes", "B"), ("family", "B"),
     ("vcc_mv", "H"),
     ("bbm_off", "B"), ("bbm_len", "B"), ("bbm_good", "B"),
     ("oob_free_n", "B"), ("oob_ecc_n", "B"), ("bbm_pages", "B"),
     ("oob_free", "8H"), ("oob_ecc", "8H"),
+    # v2 tail, SPI NOR only (zero for spi-nand)
+    ("addr_bytes", "B"), ("addr4_mode", "B"), ("dummy_x1", "B"), ("dummy_x4", "B"),
+    ("qer", "B"),
+    # EEPROM only (zero otherwise): high address bits carried in the I2C
+    # device address, or (SPI, 25xx040) in bit 3 of the opcode.
+    ("dev_addr_bits", "B"), ("dev_addr_shift", "B"), ("_pad1", "3x"),
 ]
 ID_FLAG_HAS_DEV2 = 0x01
 STRUCT_FMT = "<" + "".join(f for _, f in LAYOUT)
@@ -96,7 +113,7 @@ class AmbiguousId(ChipDBError):
 def _load_dir(path):
     import yaml
     out = {}
-    for f in sorted(glob.glob(os.path.join(path, "*.yml"))):
+    for f in sorted(glob.glob(os.path.join(path, "**", "*.yml"), recursive=True)):
         with open(f) as fh:
             doc = yaml.safe_load(fh) or {}
         for name, body in doc.items():
@@ -137,20 +154,49 @@ def _regions(regs, what, name):
     return len(regs), flat
 
 
+# Flat fields that only one family uses; the other family packs them as zero.
+NAND_ONLY_ZERO = {
+    "op_page_read": 0, "op_status_addr": 0, "op_cfg_addr": 0, "ecc_en_bit": 0,
+    "ecc_shift": 0, "ecc_mask": 0, "ecc_map": [OK] * 16, "ecc_scheme": "none",
+    "status2_reg": 0, "qe_addr": 0, "qe_bit": 0, "planes": 1,
+    "bbm_off": 0, "bbm_len": 0, "bbm_good": 0, "bbm_pages": 0,
+    "oob_free_n": 0, "oob_free": [0] * 8, "oob_ecc_n": 0, "oob_ecc": [0] * 8,
+}
+NOR_ONLY_ZERO = {"addr_bytes": 0, "addr4_mode": 0, "dummy_x1": 0, "dummy_x4": 0, "qer": 0}
+EEPROM_ONLY_ZERO = {"dev_addr_bits": 0, "dev_addr_shift": 0}
+EEPROM_MIN, EEPROM_MAX = 128, 512 << 10   # 24C01 .. M95M04
+
+
 def flatten(db, name):
     """Resolve chip -> profile -> family into one flat dict (all LAYOUT fields)."""
     chips = db["chips"]
     if name not in chips:
         raise ChipDBError(f"unknown chip '{name}'")
     c = chips[name]
-    for k in ("id", "family", "profile", "geometry", "datasheet"):
+    required = ("family", "profile", "geometry") if c.get("family") in EEPROM_FAMILIES \
+        else ("id", "family", "profile", "geometry")
+    for k in required:
         if k not in c:
             raise ChipDBError(f"{name}: missing required field '{k}'")
+    if not (c.get("datasheet") or c.get("source")):
+        # Provenance is mandatory: a datasheet for hand-written chips, a source
+        # link for chips imported from a public database.
+        raise ChipDBError(f"{name}: missing required field 'datasheet' (or 'source')")
     if c["family"] not in db["families"]:
         raise ChipDBError(f"{name}: unknown family '{c['family']}'")
+    if c["family"] not in FAMILIES:
+        raise ChipDBError(f"{name}: family '{c['family']}' has no flattener")
     if c["profile"] not in db["profiles"]:
         raise ChipDBError(f"{name}: unknown profile '{c['profile']}'")
     fam, prof = db["families"][c["family"]], db["profiles"][c["profile"]]
+    if c["family"] == "spi-nor":
+        return _flatten_nor(name, c, fam, prof)
+    if c["family"] in EEPROM_FAMILIES:
+        return _flatten_eeprom(name, c, fam, prof)
+    return _flatten_nand(name, c, fam, prof)
+
+
+def _flatten_nand(name, c, fam, prof):
     ov = c.get("overrides") or {}
     g, ident, ops = c["geometry"], c["id"], fam["opcodes"]
     shift, mask, ecc_map = expand_scheme(prof["ecc"])
@@ -186,6 +232,77 @@ def flatten(db, name):
         "bbm_off": bbm["offset"], "bbm_len": bbm["length"], "bbm_good": bbm["good"],
         "bbm_pages": sum(BBM_PAGES.get(p, 0x80) for p in bbm.get("pages", ["first"])),
         "oob_free_n": free_n, "oob_free": free, "oob_ecc_n": ecc_n, "oob_ecc": eccr,
+        "family_code": FAMILIES["spi-nand"], **NOR_ONLY_ZERO, **EEPROM_ONLY_ZERO,
+    }
+
+
+def _flatten_nor(name, c, fam, prof):
+    """SPI NOR: linear address space read in `read_unit` frames, no spare/ECC.
+
+    The flat geometry is the dump framing, not the erase map: page_size is one
+    read unit (4 KiB), pages_per_block groups 16 of them (a 64 KiB block)."""
+    ident, ops, g = c["id"], fam["opcodes"], c["geometry"]
+    size = g["size_kib"] * 1024
+    unit = min(fam["read_unit"], size)
+    ppb = max(1, min(16, size // unit))
+    mode = c.get("addr4", "none")
+    if mode not in ADDR4_MODES:
+        raise ChipDBError(f"{name}: addr4 must be one of {', '.join(ADDR4_MODES)}")
+    read = ops["read_4b"] if mode == "native" else ops["read"]
+    rid = c.get("read_id") or fam["read_id_default"]
+    dev2 = ident.get("dev2")
+    return {
+        "name": name, "family": c["family"], "profile": c["profile"],
+        "resident": bool(c.get("resident", False)),
+        "id_mfr": ident["mfr"], "id_dev": ident["dev"], "id_dev2": dev2 or 0,
+        "id_flags": ID_FLAG_HAS_DEV2 if dev2 is not None else 0,
+        "page_size": unit, "spare_size": 0, "pages_per_block": ppb,
+        "total_blocks": size // (unit * ppb), "size_bytes": size,
+        "op_read_cache": read["x1"], "op_read_cache_x4": read["x4"],
+        "op_get_feat": ops["read_sr"], "op_set_feat": ops["write_sr"],
+        "id_method": ID_METHODS.get(rid["method"], -1), "id_n_bytes": rid["id_bytes"],
+        "read_mode": READ_MODES.get(c.get("read_mode", "single"), -1),
+        "vcc_mv": c.get("vcc_mv", 3300),
+        **NAND_ONLY_ZERO,
+        "family_code": FAMILIES["spi-nor"],
+        "addr_bytes": 4 if mode != "none" else 3, "addr4_mode": ADDR4_MODES[mode],
+        "dummy_x1": fam["dummy_cycles"]["x1"], "dummy_x4": fam["dummy_cycles"]["x4"],
+        "qer": prof.get("qer") or 0, **EEPROM_ONLY_ZERO,
+    }
+
+
+def _flatten_eeprom(name, c, fam, prof):
+    """I2C (24xx) or SPI (25xx) serial EEPROM: a linear array, no ID, no spare.
+
+    Framed like SPI NOR: page_size is one read unit (256 B, or the whole part
+    if smaller), pages_per_block groups up to 16 of them. The SPI opcodes are
+    the family's READ and RDSR; an I2C part has no opcodes at all."""
+    if c.get("id"):
+        raise ChipDBError(f"{name}: serial EEPROMs have no READ ID; drop 'id'")
+    g = c["geometry"]
+    size = g["size_bytes"]
+    unit = min(fam["read_unit"], size)
+    ppb = max(1, min(16, size // unit)) if unit else 1
+    spi = c["family"] == "spi-eeprom"
+    ops = fam.get("opcodes", {})
+    return {
+        "name": name, "family": c["family"], "profile": c["profile"],
+        "resident": bool(c.get("resident", False)),
+        "aliases": list(c.get("aliases") or []),
+        "id_mfr": 0, "id_dev": 0, "id_dev2": 0, "id_flags": 0,
+        "page_size": unit, "spare_size": 0, "pages_per_block": ppb,
+        "total_blocks": size // (unit * ppb) if unit else 0, "size_bytes": size,
+        "op_read_cache": ops.get("read", 0) if spi else 0, "op_read_cache_x4": 0,
+        "op_get_feat": ops.get("read_sr", 0) if spi else 0, "op_set_feat": 0,
+        "id_method": ID_METHODS["none"], "id_n_bytes": 0,
+        "read_mode": READ_MODES["single"], "vcc_mv": c.get("vcc_mv", 3300),
+        **NAND_ONLY_ZERO,
+        "family_code": FAMILIES[c["family"]],
+        "addr_bytes": g.get("addr_bytes", 0), "addr4_mode": 0, "dummy_x1": 0,
+        "dummy_x4": 0, "qer": 0,
+        "dev_addr_bits": g.get("dev_addr_bits", 0),
+        "dev_addr_shift": g.get("dev_addr_shift", 0),
+        "page_write": c.get("page_write", 0),
     }
 
 
@@ -196,6 +313,14 @@ def check_flat(f):
     err = lambda msg: ChipDBError(f"{n}: {msg}")   # noqa: E731
     if len(n.encode()) > NAME_MAX:
         raise err(f"name longer than {NAME_MAX} bytes")
+    if f["family_code"] == FAMILIES["spi-nor"]:
+        return _check_nor(f, err)
+    if f["family_code"] in (FAMILIES["i2c-eeprom"], FAMILIES["spi-eeprom"]):
+        return _check_eeprom(f, err)
+    if any(f[k] for k in NOR_ONLY_ZERO) or any(f[k] for k in EEPROM_ONLY_ZERO):
+        raise err("SPI NOR fields set on a spi-nand profile")
+    if f["id_method"] == ID_METHODS["none"]:
+        raise err("read_id method 'none' is SPI NOR only")
     # Tier 2: structural
     if f["ecc_shift"] > 7:
         raise err("ecc_shift > 7")
@@ -245,6 +370,92 @@ def check_flat(f):
     return warnings
 
 
+def _check_nor(f, err):
+    """Tier 2/3 for spi-nor (mirrors nand_profile_check's NOR branch)."""
+    if any(f[k] != v for k, v in NAND_ONLY_ZERO.items() if k != "ecc_scheme"):
+        raise err("spi-nand fields set on a spi-nor profile")
+    if any(f[k] for k in EEPROM_ONLY_ZERO):
+        raise err("EEPROM fields set on a spi-nor profile")
+    for op in ("op_read_cache", "op_read_cache_x4", "op_get_feat", "op_set_feat"):
+        if not f[op]:
+            raise err(f"{op} is zero")
+    if f["read_mode"] < 0:
+        raise err("read_mode must be single or quad")
+    if f["id_method"] != ID_METHODS["none"] or f["id_n_bytes"] != 3:
+        raise err("SPI NOR reads a plain 3-byte JEDEC ID (method none, id_bytes 3)")
+    if f["addr_bytes"] not in (3, 4) or (f["addr_bytes"] == 4) != (f["addr4_mode"] != 0):
+        raise err("addr_bytes 4 needs an addr4 mode, 3 needs none")
+    if f["addr4_mode"] > max(ADDR4_MODES.values()):
+        raise err("unknown addr4 mode")
+    if f["dummy_x1"] > NOR_MAX_DUMMY or f["dummy_x4"] > NOR_MAX_DUMMY:
+        raise err(f"dummy cycles above {NOR_MAX_DUMMY}")
+    if not 0 <= f["qer"] <= QER_MAX:
+        raise err(f"qer must be a JESD216 code 0..{QER_MAX}")
+    page, ppb, blocks = f["page_size"], f["pages_per_block"], f["total_blocks"]
+    if f["spare_size"] != 0:
+        raise err("SPI NOR has no spare area (spare_size 0)")
+    if page <= 0 or page & (page - 1) or ppb <= 0 or ppb & (ppb - 1) or blocks <= 0:
+        raise err("read unit and pages_per_block must be powers of two, blocks > 0")
+    if page > MAX_PAGE_BUFFER:
+        raise err(f"page_size exceeds MAX_PAGE_BUFFER ({MAX_PAGE_BUFFER})")
+    size = page * ppb * blocks
+    if size >= 1 << 32:
+        raise err("total size overflows uint32")
+    if size > 1 << 24 and f["addr_bytes"] != 4:
+        raise err("over 16 MiB needs 4-byte addressing (addr4: native/enter)")
+    warnings = []
+    if not 32 << 10 <= size <= 256 << 20:
+        warnings.append(f"{f['name']}: size {size >> 10} KiB is outside the usual "
+                        "32 KiB - 256 MiB SPI NOR range; double-check the geometry")
+    return warnings
+
+
+def _check_eeprom(f, err):
+    """Tier 2/3 for i2c-eeprom / spi-eeprom (mirrors nand_profile_check)."""
+    if any(f[k] != v for k, v in NAND_ONLY_ZERO.items() if k != "ecc_scheme"):
+        raise err("spi-nand fields set on an EEPROM profile")
+    spi = f["family_code"] == FAMILIES["spi-eeprom"]
+    if f["id_mfr"] or f["id_dev"] or f["id_dev2"] or f["id_flags"] or \
+            f["id_method"] != ID_METHODS["none"] or f["id_n_bytes"] != 0:
+        raise err("an EEPROM profile carries no ID (method none, id_bytes 0)")
+    if f["addr4_mode"] or f["dummy_x1"] or f["dummy_x4"] or f["qer"] or \
+            f["read_mode"] != READ_MODES["single"] or f["op_read_cache_x4"] or f["op_set_feat"]:
+        raise err("SPI NOR fields set on an EEPROM profile")
+    if spi:
+        if not f["op_read_cache"] or not f["op_get_feat"]:
+            raise err("spi-eeprom needs the READ and RDSR opcodes")
+        if f["op_read_cache"] & 0x08:
+            raise err("READ opcode has bit 3 set: that bit carries A8")
+        if not 1 <= f["addr_bytes"] <= 3:
+            raise err("spi-eeprom address is 1, 2 or 3 bytes")
+        if (f["dev_addr_bits"], f["dev_addr_shift"]) not in ((0, 0), (1, 3)):
+            raise err("spi-eeprom: the only extra address bit is A8 in opcode bit 3")
+        if f["dev_addr_bits"] and f["addr_bytes"] != 1:
+            raise err("A8 in the opcode only goes with a 1-byte address")
+    else:
+        if f["op_read_cache"] or f["op_get_feat"]:
+            raise err("i2c-eeprom has no opcodes")
+        if f["addr_bytes"] not in (1, 2):
+            raise err("i2c-eeprom word address is 1 or 2 bytes")
+        if f["dev_addr_bits"] > 3 or f["dev_addr_shift"] + f["dev_addr_bits"] > 3:
+            raise err("i2c-eeprom: at most 3 address bits, within A2..A0 of the device address")
+    page, ppb, blocks = f["page_size"], f["pages_per_block"], f["total_blocks"]
+    if f["spare_size"] != 0:
+        raise err("an EEPROM has no spare area (spare_size 0)")
+    if page <= 0 or page & (page - 1) or ppb <= 0 or ppb & (ppb - 1) or blocks <= 0:
+        raise err("read unit and pages_per_block must be powers of two, blocks > 0")
+    if page > MAX_PAGE_BUFFER:
+        raise err(f"page_size exceeds MAX_PAGE_BUFFER ({MAX_PAGE_BUFFER})")
+    size = page * ppb * blocks
+    if size & (size - 1) or not EEPROM_MIN <= size <= EEPROM_MAX:
+        raise err(f"size must be a power of two, {EEPROM_MIN} B .. {EEPROM_MAX >> 10} KiB")
+    reach = 1 << (8 * f["addr_bytes"] + f["dev_addr_bits"])
+    if size > reach:
+        raise err(f"{size} B needs more address bits than {f['addr_bytes']} byte(s)"
+                  f" + {f['dev_addr_bits']} carry")
+    return []
+
+
 def validate_db(db):
     """Validate every chip; returns (flats by name, warnings)."""
     flats, warnings = {}, []
@@ -256,19 +467,34 @@ def validate_db(db):
 
 
 # ---- Identify / disambiguate ------------------------------------------------------
-def candidates(db, mfr, dev):
-    return [flatten(db, n) for n, c in db["chips"].items()
-            if c["id"]["mfr"] == mfr and c["id"]["dev"] == dev]
+def candidates(db, mfr, dev, family=None, dev2=None):
+    """Chips with this (mfr, dev). A chip that declares dev2 is only a
+    candidate when dev2 is unknown or matches it (as the device's lookup)."""
+    out = []
+    for n, c in db["chips"].items():
+        if c["family"] in EEPROM_FAMILIES:
+            continue                    # no READ ID: never matched by one
+        i = c["id"]
+        if i["mfr"] != mfr or i["dev"] != dev:
+            continue
+        if family is not None and c["family"] != family:
+            continue
+        if dev2 is not None and i.get("dev2") is not None and i["dev2"] != dev2:
+            continue
+        out.append(flatten(db, n))
+    return out
 
 
-def identify(db, mfr, dev, dev2=None, cached=None):
+def identify(db, mfr, dev, dev2=None, cached=None, family=None):
     """Resolve a detected JEDEC id to one flat profile (design section 5).
 
     Ladder: dev2 byte -> (ONFI, reserved) -> cached user choice. Anything left
-    ambiguous raises AmbiguousId; nothing is ever guessed."""
-    cands = candidates(db, mfr, dev)
+    ambiguous raises AmbiguousId; nothing is ever guessed. `family` limits the
+    search to one bus family (SPI NAND and SPI NOR IDs are read differently)."""
+    cands = candidates(db, mfr, dev, family, dev2)
     if not cands:
-        raise ChipDBError(f"no chip with id 0x{mfr:02X} 0x{dev:02X}")
+        raise ChipDBError(f"no chip with id 0x{mfr:02X} 0x{dev:02X}"
+                          + (f" 0x{dev2:02X}" if dev2 is not None else ""))
     if len(cands) > 1 and dev2 is not None:
         by_dev2 = [c for c in cands if c["id_flags"] & ID_FLAG_HAS_DEV2 and c["id_dev2"] == dev2]
         if by_dev2:
@@ -284,9 +510,9 @@ def identify(db, mfr, dev, dev2=None, cached=None):
 def pack_struct(f):
     vals = []
     for field, fmt in LAYOUT:
-        if fmt == "x":
+        if fmt.endswith("x"):
             continue
-        v = f[field]
+        v = f["family_code"] if field == "family" else f[field]
         if field == "name":
             v = v.encode()
         elif field == "ecc_map":
@@ -321,7 +547,7 @@ def unpack_blob(blob):
     raw = struct.unpack(STRUCT_FMT, blob[6:6 + struct.calcsize(STRUCT_FMT)])
     out, i = {}, 0
     for field, fmt in LAYOUT:
-        if fmt == "x":
+        if fmt.endswith("x"):
             continue
         if fmt == "8H":
             out[field] = list(raw[i:i + 8]); i += 8
@@ -331,7 +557,7 @@ def unpack_blob(blob):
             v = v.rstrip(b"\x00").decode()
         elif field == "ecc_map":
             v = list(v)
-        out[field] = v
+        out["family_code" if field == "family" else field] = v
     return out
 
 
@@ -340,10 +566,70 @@ def field_offsets():
     out, off = [], 0
     for field, fmt in LAYOUT:
         size = struct.calcsize("<" + fmt)
-        if fmt != "x":
+        if not fmt.endswith("x"):
             out.append((field, off, size))
         off += size
     return out
+
+
+def shared_ids(flats):
+    """Groups of chips the device can't tell apart by (family, mfr, dev, dev2)."""
+    groups = {}
+    for f in flats.values():
+        if f["family"] in EEPROM_FAMILIES:
+            continue                    # no ID to share: always picked by name
+        key = (f["family"], f["id_mfr"], f["id_dev"],
+               f["id_dev2"] if f["id_flags"] & ID_FLAG_HAS_DEV2 else None)
+        groups.setdefault(key, []).append(f["name"])
+    return {k: v for k, v in groups.items() if len(v) > 1}
+
+
+def _list_row(f):
+    ident = f"0x{f['id_mfr']:02X} 0x{f['id_dev']:02X}"
+    ident += f" 0x{f['id_dev2']:02X}" if f["id_flags"] & ID_FLAG_HAS_DEV2 else "     "
+    if f["family"] in EEPROM_FAMILIES:
+        size = f["size_bytes"]
+        ident = "no ID         "
+        extra = f"  +{f['dev_addr_bits']} bit(s)" if f["dev_addr_bits"] else ""
+        detail = (f"{size:>7} B    addr{f['addr_bytes']}{extra}"
+                  f"{'  resident' if f['resident'] else ''}")
+    elif f["family"] == "spi-nor":
+        size = f["page_size"] * f["pages_per_block"] * f["total_blocks"]
+        detail = (f"{size >> 10:>7} KiB  addr{f['addr_bytes']}  "
+                  f"{f['vcc_mv']} mV{'  resident' if f['resident'] else ''}")
+    else:
+        detail = f"{f['ecc_scheme']:9} planes={f['planes']}{'  resident' if f['resident'] else ''}"
+    return f"  {f['name']:23} {ident}  {f['profile']:14} {detail}"
+
+
+def resolve_name(db, name):
+    """The DB key for `name`: an exact chip name, else a case-insensitive
+    match on a chip name or one of its aliases (AT24C256 -> 24C256)."""
+    if name in db["chips"]:
+        return name
+    want = name.upper()
+    hits = [n for n, c in db["chips"].items()
+            if n.upper() == want or want in (a.upper() for a in c.get("aliases") or [])]
+    if len(hits) == 1:
+        return hits[0]
+    if hits:
+        raise ChipDBError(f"'{name}' names several chips: {', '.join(hits)}")
+    raise ChipDBError(f"unknown chip '{name}'")
+
+
+def eeprom_i2c_base(f, ack_mask):
+    """Where an i2c-eeprom part answers, from the device's ACK scan of
+    0x50..0x57 (bit i = 0x50 + i acknowledged). Returns the base address, or
+    None if no aligned set of the part's addresses all acknowledged. Mirrors
+    eeprom_i2c_base() in src/eeprom_seq.h."""
+    span = [k << f["dev_addr_shift"] for k in range(1 << f["dev_addr_bits"])]
+    carry = sum(span)
+    for i in range(8):
+        if i & carry:
+            continue
+        if all(ack_mask >> (i | s) & 1 for s in span):
+            return 0x50 + i
+    return None
 
 
 def main(argv=None):
@@ -351,6 +637,8 @@ def main(argv=None):
     ap.add_argument("--db", default=DB_DIR)
     ap.add_argument("--show", metavar="CHIP")
     ap.add_argument("--blob", metavar="CHIP")
+    ap.add_argument("--list", action="store_true", help="list every chip")
+    ap.add_argument("--family", choices=sorted(FAMILIES), help="limit --list to one family")
     a = ap.parse_args(argv)
     try:
         db = load_db(a.db)
@@ -360,16 +648,33 @@ def main(argv=None):
         return 1
     for w in warnings:
         print(f"[~] {w}")
-    if a.show:
-        for k, v in flats[a.show].items():
+    try:
+        show = resolve_name(db, a.show) if a.show else None
+        blob = resolve_name(db, a.blob) if a.blob else None
+    except ChipDBError as e:
+        print(f"[!] {e}")
+        return 1
+    if show:
+        for k, v in flats[show].items():
             print(f"  {k:18} {v}")
-    elif a.blob:
-        print(pack_blob(flats[a.blob]).hex())
+    elif blob:
+        print(pack_blob(flats[blob]).hex())
     else:
         print(f"[+] {len(flats)} chips OK (schema v{SCHEMA_VER}, {STRUCT_SIZE}-byte profile)")
+        for fam in FAMILIES:
+            sub = [f for f in flats.values() if f["family"] == fam]
+            if sub:
+                print(f"    {fam}: {len(sub)} chips, "
+                      f"{sum(f['resident'] for f in sub)} resident")
+        shared = shared_ids(flats)
+        if shared:
+            print(f"[~] {len(shared)} IDs are shared by several chips (the device asks "
+                  "the host to pick; see --list)")
         for f in flats.values():
-            print(f"  {f['name']:18} 0x{f['id_mfr']:02X} 0x{f['id_dev']:02X}  "
-                  f"{f['profile']:10} {f['ecc_scheme']:9} planes={f['planes']}")
+            # Without --list, show the short spi-nand table only.
+            if a.list and a.family in (None, f["family"]) or \
+                    not a.list and f["family"] == "spi-nand":
+                print(_list_row(f))
     return 0
 
 

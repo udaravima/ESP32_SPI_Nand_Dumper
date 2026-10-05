@@ -1,0 +1,154 @@
+# I2C serial EEPROMs, written by hand from the Linux at24 driver's chip table
+# (drivers/nvmem/at24.c, GPL-2.0-or-later: sizes and 8/16-bit addressing, as
+# facts) and the vendors' datasheets (page-write size, device-address bits).
+# Not yet checked on hardware. `page_write` is informational: the firmware
+# never writes.
+
+"24C01":
+  family: i2c-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 128, addr_bytes: 1, dev_addr_bits: 0, dev_addr_shift: 0}
+  page_write: 8
+  vcc_mv: 3300
+  resident: true
+  aliases: ["AT24C01", "24LC01B", "24AA01", "M24C01", "CAT24C01", "BR24G01"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/drivers/nvmem/at24.c"
+  datasheet: "Linux at24 id 24c01; vendor datasheets of AT24C01, 24LC01B, 24AA01"
+
+"24C02":
+  family: i2c-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 256, addr_bytes: 1, dev_addr_bits: 0, dev_addr_shift: 0}
+  page_write: 8
+  vcc_mv: 3300
+  resident: true
+  aliases: ["AT24C02", "24LC02B", "24AA02", "M24C02", "CAT24C02", "BR24G02", "FT24C02"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/drivers/nvmem/at24.c"
+  datasheet: "Linux at24 id 24c02; vendor datasheets of AT24C02, 24LC02B, 24AA02"
+
+"24C04":
+  family: i2c-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 512, addr_bytes: 1, dev_addr_bits: 1, dev_addr_shift: 0}
+  page_write: 16
+  vcc_mv: 3300
+  resident: true
+  aliases: ["AT24C04", "24LC04B", "24AA04", "M24C04", "CAT24C04", "BR24G04"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/drivers/nvmem/at24.c"
+  datasheet: "Linux at24 id 24c04; vendor datasheets of AT24C04, 24LC04B, 24AA04"
+  notes: "A8 is device-address bit 0 (P0): the part answers at two addresses"
+
+"24C08":
+  family: i2c-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 1024, addr_bytes: 1, dev_addr_bits: 2, dev_addr_shift: 0}
+  page_write: 16
+  vcc_mv: 3300
+  resident: true
+  aliases: ["AT24C08", "24LC08B", "24AA08", "M24C08", "CAT24C08", "BR24G08"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/drivers/nvmem/at24.c"
+  datasheet: "Linux at24 id 24c08; vendor datasheets of AT24C08, 24LC08B, 24AA08"
+  notes: "A9..A8 are device-address bits 1..0: four addresses"
+
+"24C16":
+  family: i2c-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 2048, addr_bytes: 1, dev_addr_bits: 3, dev_addr_shift: 0}
+  page_write: 16
+  vcc_mv: 3300
+  resident: true
+  aliases: ["AT24C16", "24LC16B", "24AA16", "M24C16", "CAT24C16", "BR24G16"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/drivers/nvmem/at24.c"
+  datasheet: "Linux at24 id 24c16; vendor datasheets of AT24C16, 24LC16B, 24AA16"
+  notes: "A10..A8 are device-address bits 2..0: all eight addresses"
+
+"24C32":
+  family: i2c-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 4096, addr_bytes: 2, dev_addr_bits: 0, dev_addr_shift: 0}
+  page_write: 32
+  vcc_mv: 3300
+  resident: true
+  aliases: ["AT24C32", "24LC32A", "24AA32A", "M24C32", "CAT24C32", "BR24G32"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/drivers/nvmem/at24.c"
+  datasheet: "Linux at24 id 24c32; vendor datasheets of AT24C32, 24LC32A, 24AA32A"
+
+"24C64":
+  family: i2c-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 8192, addr_bytes: 2, dev_addr_bits: 0, dev_addr_shift: 0}
+  page_write: 32
+  vcc_mv: 3300
+  resident: true
+  aliases: ["AT24C64", "24LC64", "24AA64", "M24C64", "CAT24C64", "BR24G64"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/drivers/nvmem/at24.c"
+  datasheet: "Linux at24 id 24c64; vendor datasheets of AT24C64, 24LC64, 24AA64"
+
+"24C128":
+  family: i2c-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 16384, addr_bytes: 2, dev_addr_bits: 0, dev_addr_shift: 0}
+  page_write: 64
+  vcc_mv: 3300
+  resident: true
+  aliases: ["AT24C128", "24LC128", "24AA128", "M24128", "CAT24C128", "BR24G128"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/drivers/nvmem/at24.c"
+  datasheet: "Linux at24 id 24c128; vendor datasheets of AT24C128, 24LC128, 24AA128"
+
+"24C256":
+  family: i2c-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 32768, addr_bytes: 2, dev_addr_bits: 0, dev_addr_shift: 0}
+  page_write: 64
+  vcc_mv: 3300
+  resident: true
+  aliases: ["AT24C256", "24LC256", "24AA256", "M24256", "CAT24C256", "BR24G256"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/drivers/nvmem/at24.c"
+  datasheet: "Linux at24 id 24c256; vendor datasheets of AT24C256, 24LC256, 24AA256"
+
+"24C512":
+  family: i2c-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 65536, addr_bytes: 2, dev_addr_bits: 0, dev_addr_shift: 0}
+  page_write: 128
+  vcc_mv: 3300
+  resident: true
+  aliases: ["AT24C512", "24LC512", "24AA512", "M24512", "CAT24C512"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/drivers/nvmem/at24.c"
+  datasheet: "Linux at24 id 24c512; vendor datasheets of AT24C512, 24LC512, 24AA512"
+
+"24CM01":
+  family: i2c-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 131072, addr_bytes: 2, dev_addr_bits: 1, dev_addr_shift: 0}
+  page_write: 256
+  vcc_mv: 3300
+  resident: true
+  aliases: ["AT24CM01", "AT24C1024", "M24M01", "CAT24M01"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/drivers/nvmem/at24.c"
+  datasheet: "Linux at24 id 24c1024; vendor datasheets of AT24CM01, AT24C1024, M24M01"
+  notes: "A16 is device-address bit 0: two addresses"
+
+"24xx1025":
+  family: i2c-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 131072, addr_bytes: 2, dev_addr_bits: 1, dev_addr_shift: 2}
+  page_write: 128
+  vcc_mv: 3300
+  resident: true
+  aliases: ["24LC1025", "24AA1025", "24FC1025"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/drivers/nvmem/at24.c"
+  datasheet: "Linux at24 id 24c1025; vendor datasheets of 24LC1025, 24AA1025, 24FC1025"
+  notes: "Microchip: block bit B0 is device-address bit 2, and pin 3 (A2) must be high"
+
+"24CM02":
+  family: i2c-eeprom
+  profile: eeprom-generic
+  geometry: {size_bytes: 262144, addr_bytes: 2, dev_addr_bits: 2, dev_addr_shift: 0}
+  page_write: 256
+  vcc_mv: 3300
+  resident: true
+  aliases: ["AT24CM02", "M24M02", "CAT24M02"]
+  source: "https://github.com/torvalds/linux/blob/a90ee4305c4a5df72c11b31dacfdc76e00fcf78a/drivers/nvmem/at24.c"
+  datasheet: "Linux at24 id 24c2048; vendor datasheets of AT24CM02, M24M02, CAT24M02"
+  notes: "A17..A16 are device-address bits 1..0: four addresses"

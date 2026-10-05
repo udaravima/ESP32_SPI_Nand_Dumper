@@ -2,11 +2,20 @@
 
 Three layers, resolved and flattened on the host by `tools/chipdb.py`:
 
-- `families/` — bus/command set shared by a memory type (`spi-nand`).
+- `families/` — bus/command set shared by a memory type (`spi-nand`, `spi-nor`,
+  `i2c-eeprom`, `spi-eeprom`).
 - `profiles/` — vendor quirks: ECC status decoding, quad-enable, OOB layout.
 - `chips/` — one file per part: JEDEC id, geometry, and which family/profile it uses.
+  `chips/spi-nor/flashrom-*.yml` are generated from flashrom by
+  `tools/import_flashrom.py` (facts plus a source link per entry; do not edit).
+  A chip written by hand elsewhere under `chips/` wins over an imported one.
+  `chips/eeprom/` holds the serial EEPROMs: they have no `id` (the part is
+  picked by name or alias), and `geometry` gives `size_bytes`, `addr_bytes`
+  and where higher address bits travel (`dev_addr_bits`/`dev_addr_shift`).
 
-Design: `docs/superpowers/specs/2026-08-23-vendor-profile-architecture-design.md`.
+Design: `docs/superpowers/specs/2026-08-23-vendor-profile-architecture-design.md`,
+for SPI NOR `docs/superpowers/specs/2026-10-05-spi-nor-design.md`, and for serial
+EEPROMs `docs/superpowers/specs/2026-10-05-eeprom-design.md`.
 
 **Status: stage 3.** The firmware builds from this DB: every chip tagged
 `resident: true` is flattened by `tools/gen_profiles.py` into
@@ -20,7 +29,8 @@ doesn't match the chip in the socket.
 Check the DB and see what the device would receive:
 
 ```bash
-python3 tools/chipdb.py                       # validate + list
+python3 tools/chipdb.py                       # validate + summary
+python3 tools/chipdb.py --list --family spi-nor  # every NOR chip
 python3 tools/chipdb.py --show MT29F2G01ABAGD # flattened profile
 python3 tools/chipdb.py --blob MT29F2G01ABAGD # push blob, hex
 ```

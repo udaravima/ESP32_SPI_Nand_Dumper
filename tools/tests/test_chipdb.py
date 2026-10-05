@@ -20,7 +20,9 @@ def _decode(scheme, status):
 # ---- the shipped DB -------------------------------------------------------------
 def test_shipped_db_validates_without_warnings(db):
     flats, warnings = cdb.validate_db(db)
-    assert set(flats) == {"MT29F2G01ABAGD", "DS35Q1GA"}
+    assert {n for n, f in flats.items() if f["family"] == "spi-nand"} == \
+        {"MT29F2G01ABAGD", "DS35Q1GA"}
+    assert sum(f["family"] == "spi-nor" for f in flats.values()) > 300   # flashrom seed
     assert warnings == []
 
 
@@ -162,7 +164,7 @@ def test_blob_golden_ds35(db):
     # Locks the wire layout; stage 2's native C test unpacks these same bytes.
     blob = cdb.pack_blob(cdb.flatten(db, "DS35Q1GA"))
     assert len(blob) == 6 + cdb.STRUCT_SIZE + 4
-    assert blob[:6] == b"PRF\x01" + cdb.STRUCT_SIZE.to_bytes(2, "little")
+    assert blob[:6] == b"PRF" + bytes([cdb.SCHEMA_VER]) + cdb.STRUCT_SIZE.to_bytes(2, "little")
     assert blob[6:14] == b"DS35Q1GA"
     body = blob[6:]
     assert body[24:28] == bytes([0xE5, 0x71, 0x00, 0x00])        # id, no dev2
@@ -183,4 +185,6 @@ def test_blob_transport_checks_fail_closed(db, corrupt, code):
 
 def test_cli_lists_db(capsys):
     assert cdb.main([]) == 0
-    assert "2 chips OK" in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert "spi-nand: 2 chips, 2 resident" in out
+    assert "MT29F2G01ABAGD" in out and "W25Q128.V" not in out   # NOR only with --list
