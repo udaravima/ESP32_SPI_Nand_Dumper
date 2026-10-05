@@ -195,8 +195,11 @@ Reset the board with the chip connected.
 
 **Pass:**
 
-- `[*] Detected SPI NOR W25Q64.V (0xEF 0x40 0x17)` (or your size; W25Q32 is
-  `0x16`, W25Q128 is `0x18`).
+- `[*] Detected SPI NOR W25Q64BV (0xEF 0x40 0x17)` (or your size; W25Q32 is
+  `0x16`, W25Q128 is `0x18`). The name comes from flashrom's table and is the
+  first chip with that ID, so a W25Q64JV-IQ also shows as `W25Q64BV`. That is
+  expected: same ID, same size, same read commands. The `-IM`/`-JM` parts
+  answer `0xEF 0x70 ..` instead.
 - The menu shows the right size for the part (8.00 MB for a W25Q64).
 - Reset five times. The ID is the same every time.
 
