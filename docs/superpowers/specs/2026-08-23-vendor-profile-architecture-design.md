@@ -1,7 +1,7 @@
 # Vendor/Family Profile Architecture — Design
 
 - **Date:** 2026-08-23
-- **Status:** Approved design; stages 1 (host DB + `tools/chipdb.py`) and 2 (resident table + read-path refactor) implemented
+- **Status:** Approved design; stages 1 (host DB + `tools/chipdb.py`), 2 (resident table + read-path refactor) and 3 (push protocol + two-phase arm, `src/nand_session.h`) implemented
 - **Revision:** r2 — folded in peer review (2026-08-23). Schema changes made
   while `schema_ver` is still unshipped: `ecc_map[16]` (out-of-bounds fix on the
   decode line), `read_id` moved to the chip layer, OOB uniform-sections →
@@ -16,6 +16,11 @@
   `bbm_pages` (bitmask for `bbm.pages`). YAML `bbm` keys are `offset`/`length`,
   because a bare `off` parses as a YAML 1.1 boolean. Authoritative layout: the
   `LAYOUT` table in `tools/chipdb.py` (120 bytes, naturally aligned).
+- **Stage 3 notes** (2026-10-05): the arm is bound to the staged blob — `A`
+  carries the blob's CRC32, and a mismatch disarms. Replies are `NRSP` frames
+  (wire format in `docs/DEVELOPER_GUIDE.md`); a `G` while a push is unarmed is
+  refused. The `dump.config.json` choice cache is implemented; the standalone
+  NVS choice cache and the profile-aware `ecc_stripper.py` are not yet.
 - **Author:** Udara Vimarsha (with Claude)
 - **Scope of this document:** Cycle 1 of a multi-cycle effort. The *schema* is
   designed for a full read+write programmer; this cycle *implements* the

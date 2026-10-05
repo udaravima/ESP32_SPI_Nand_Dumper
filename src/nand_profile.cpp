@@ -20,6 +20,11 @@ const char *nand_prf_err_name(nand_prf_err_t e) {
     case NAND_PRF_E_ID_MISMATCH:  return "E_ID_MISMATCH";
     case NAND_PRF_E_AMBIGUOUS_ID: return "E_AMBIGUOUS_ID";
     case NAND_PRF_E_UNKNOWN_ID:   return "E_UNKNOWN_ID";
+    case NAND_PRF_E_NOT_STAGED:   return "E_NOT_STAGED";
+    case NAND_PRF_E_ARM_CRC:      return "E_ARM_CRC";
+    case NAND_PRF_E_NOT_ARMED:    return "E_NOT_ARMED";
+    case NAND_PRF_E_BAD_CMD:      return "E_BAD_CMD";
+    case NAND_PRF_E_TIMEOUT:      return "E_TIMEOUT";
   }
   return "E_?";
 }

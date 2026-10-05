@@ -56,13 +56,19 @@ bool wifi_transport_client_available() {
   return false;
 }
 
-void wifi_transport_wait_trigger() {
-  Serial.println("[*] Waiting for GO trigger...");
-  while (true) {
-    if (s_client.available() && s_client.read() == 'G') break;
+size_t wifi_transport_read(uint8_t *buf, size_t n, uint32_t timeout_ms) {
+  size_t got = 0;
+  unsigned long start = millis();
+  while (got < n) {
+    int avail = s_client.available();
+    if (avail > 0) {
+      int k = s_client.read(buf + got, n - got < (size_t)avail ? n - got : (size_t)avail);
+      if (k > 0) { got += k; start = millis(); continue; }
+    }
+    if (!s_client.connected() || millis() - start >= timeout_ms) break;
     delay(1);
   }
-  Serial.println("[*] GO received!");
+  return got;
 }
 
 size_t wifi_transport_send(const uint8_t *data, size_t len) {

@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include "nand_driver.h"
 #include "nand_profile.h"
+#include "nand_session.h"
 #include "nand_addr.h"
 #include "dump_header.h"
 #include "wifi_transport.h"
@@ -8,6 +9,10 @@
 #include "sys_info.h"
 
 #define MAX_PAGE_SIZE 8192  // upper bound for buffer/transfer sizing
+// Session timeouts: how long a connected client may sit between commands, and
+// how long one command's payload (a pushed profile, an ARM CRC) may take.
+#define SESSION_IDLE_MS    30000
+#define SESSION_PAYLOAD_MS 5000
 
 // ============ RUNTIME CONFIG (defaults) ============
 // WiFi creds start empty: entered once via the menu, then persisted to NVS, so
@@ -29,14 +34,17 @@ static int      cfg_page_addr_bits  = 6;
 static int      cfg_planes          = 1;   // 2 on multi-plane parts (MT29F2G01)
 static bool     cfg_ecc_on          = false;   // global policy: OFF/raw
 // Detected chip. g_active is the one flat profile the read path runs against:
-// a copy of the resident entry for a known chip, or a manual profile built
-// from the menu geometry for an unknown one.
+// a copy of the resident entry for a known chip, a host-pushed profile once
+// one is armed, or a manual profile built from the menu geometry otherwise.
 static uint8_t  g_id[3] = {0, 0, 0};           // mfr, dev, dev2 as read from 9Fh
-static bool     g_known = false;
+static bool     g_known = false;               // g_active came from the table or a push
+static nand_chip_state_t g_chip_state = NAND_CHIP_UNKNOWN;
 static active_profile_t g_active;
+static nand_session_t g_session;
 // ===================================================
 
 void cmd_dump(bool verify);
+void apply_runtime_settings();
 
 // ---- Serial helpers ----
 
@@ -96,8 +104,9 @@ void show_menu() {
   Serial.println("========================================");
   Serial.println("  ESP32 SPI NAND Dumper v3.1.1 — Config");
   Serial.println("========================================");
-  if (g_known) Serial.printf("  Detected: %s (0x%02X 0x%02X)\n",
-                             g_active.name, g_id[0], g_id[1]);
+  if (g_known) Serial.printf("  Detected: %s (0x%02X 0x%02X)%s\n",
+                             g_active.name, g_id[0], g_id[1],
+                             g_chip_state == NAND_CHIP_PUSHED ? " — pushed by host" : "");
   else         Serial.printf("  Detected: UNKNOWN (0x%02X 0x%02X) — manual geometry\n",
                              g_id[0], g_id[1]);
   Serial.println("  -- Network --");
@@ -334,6 +343,72 @@ bool bring_up_wifi() {
   return wifi_transport_init(&wifi_cfg);
 }
 
+// Make `p` the active profile and take its geometry. A pushed profile keeps
+// the user's read mode and ECC choices, exactly like a resident one does after
+// the NVS settings load.
+static void adopt_profile(const active_profile_t *p, nand_chip_state_t state) {
+  g_active = *p;
+  g_known = true;
+  g_chip_state = state;
+  cfg_page_size       = g_active.page_size;
+  cfg_spare_size      = g_active.spare_size;
+  cfg_pages_per_block = g_active.pages_per_block;
+  cfg_total_blocks    = g_active.total_blocks;
+  cfg_page_addr_bits  = log2_int(g_active.pages_per_block);
+  cfg_planes          = g_active.planes;
+}
+
+static size_t link_read(void *, uint8_t *buf, size_t n, uint32_t timeout_ms) {
+  return wifi_transport_read(buf, n, timeout_ms);
+}
+static size_t link_write(void *, const uint8_t *buf, size_t n) {
+  return wifi_transport_send(buf, n);
+}
+
+// One client connection: answer I/P/A until G (dump) or the link drops.
+// A bare 'G' goes straight to the dump, as before stage 3.
+static void serve_session() {
+  static const nand_link_t link = { link_read, link_write, NULL };
+  g_session.max_page_size = MAX_PAGE_SIZE;
+  g_session.timeout_ms = SESSION_PAYLOAD_MS;
+  memcpy(g_session.id, g_id, sizeof(g_id));
+  nand_session_begin(&g_session);
+  Serial.println("[*] Client connected; waiting for a command...");
+
+  while (true) {
+    g_session.chip_state = g_chip_state;
+    g_session.active = &g_active;
+    uint8_t cmd;
+    if (wifi_transport_read(&cmd, 1, SESSION_IDLE_MS) != 1) {
+      Serial.println("[!] Client idle or gone; closing.");
+      wifi_transport_close();
+      return;
+    }
+    switch (nand_session_handle(&g_session, &link, cmd)) {
+      case NAND_SESS_MORE:
+        if (cmd == NAND_CMD_PUSH)
+          Serial.printf("[*] Profile push: %s\n",
+                        g_session.has_staged ? "verified, waiting for ARM" : "rejected");
+        break;
+      case NAND_SESS_ARMED:
+        adopt_profile(&g_session.armed, NAND_CHIP_PUSHED);
+        Serial.printf("[+] Armed pushed profile %s (0x%02X 0x%02X)\n",
+                      g_active.name, g_id[0], g_id[1]);
+        apply_runtime_settings();
+        break;
+      case NAND_SESS_GO:
+        Serial.println("[*] GO received!");
+        cmd_dump(cfg_verify);
+        Serial.println("[+] Dump complete. Run dump.py again to re-dump, or 'M' to reconfigure.");
+        return;
+      case NAND_SESS_CLOSE:
+        Serial.println("[!] Session closed after a refused command.");
+        wifi_transport_close();
+        return;
+    }
+  }
+}
+
 // ============ SETUP ============
 
 void setup() {
@@ -365,23 +440,18 @@ void setup() {
   // Re-assert the cheap sanity checks on the resident entry before trusting it.
   if (hit && (perr = nand_profile_check(hit, MAX_PAGE_SIZE)) != NAND_PRF_OK) hit = NULL;
   if (hit) {
-    g_active = *hit;
-    g_known = true;
+    adopt_profile(hit, NAND_CHIP_RESIDENT);
+    cfg_read_mode = (nand_read_mode_t)g_active.read_mode;
     Serial.printf("[*] Detected %s (0x%02X 0x%02X)\n", g_active.name, g_id[0], g_id[1]);
-    cfg_page_size       = g_active.page_size;
-    cfg_spare_size      = g_active.spare_size;
-    cfg_pages_per_block = g_active.pages_per_block;
-    cfg_total_blocks    = g_active.total_blocks;
-    cfg_page_addr_bits  = log2_int(g_active.pages_per_block);
-    cfg_planes          = g_active.planes;
-    cfg_read_mode       = (nand_read_mode_t)g_active.read_mode;
   } else {
+    g_chip_state = perr == NAND_PRF_E_AMBIGUOUS_ID ? NAND_CHIP_AMBIGUOUS : NAND_CHIP_UNKNOWN;
     Serial.printf("[!] %s for chip 0x%02X 0x%02X 0x%02X — using manual geometry\n",
                   nand_prf_err_name(perr), g_id[0], g_id[1], g_id[2]);
     if (perr == NAND_PRF_E_AMBIGUOUS_ID)
       for (unsigned i = 0; i < n_resident; i++)
         if (table[i].id_mfr == g_id[0] && table[i].id_dev == g_id[1])
           Serial.printf("    candidate: %s\n", table[i].name);
+    Serial.println("    dump.py can push this chip's profile from the host database.");
   }
 
   // ---- Load saved settings (over detected defaults), then configure ----
@@ -428,12 +498,11 @@ void loop() {
     }
   }
 
-  // Dump as soon as a client connects and sends 'G'. cmd_dump() closes the
-  // client at the end, so the next connection begins a fresh dump.
+  // Serve each client connection: optional profile push, then 'G' dumps.
+  // cmd_dump() closes the client at the end, so the next connection begins a
+  // fresh session.
   if (wifi_transport_client_available()) {
-    wifi_transport_wait_trigger();
-    cmd_dump(cfg_verify);
-    Serial.println("[+] Dump complete. Run dump.py again to re-dump, or 'M' to reconfigure.");
+    serve_session();
     announced = false;
   }
 
