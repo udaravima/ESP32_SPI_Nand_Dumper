@@ -45,6 +45,49 @@ static nand_session_t g_session;
 
 void cmd_dump(bool verify);
 void apply_runtime_settings();
+static void adopt_profile(const active_profile_t *p, nand_chip_state_t state);
+String read_serial_line();
+
+// Resident chips that share the detected (mfr, dev). More than one means the
+// ID alone can't say which part this is (design § 5).
+static unsigned id_candidates() {
+  unsigned n, c = 0;
+  const active_profile_t *t = nand_profile_resident(&n);
+  for (unsigned i = 0; i < n; i++)
+    if (t[i].id_mfr == g_id[0] && t[i].id_dev == g_id[1]) c++;
+  return c;
+}
+
+// Standalone tiebreak: list the resident chips sharing this ID, take the
+// user's pick, and remember it in NVS for this (mfr, dev).
+static void choose_chip() {
+  unsigned n;
+  const active_profile_t *t = nand_profile_resident(&n);
+  const active_profile_t *cand[16];
+  unsigned k = 0;
+  for (unsigned i = 0; i < n && k < 16; i++)
+    if (t[i].id_mfr == g_id[0] && t[i].id_dev == g_id[1]) {
+      cand[k] = &t[i];
+      Serial.printf("    [%u] %s: %u blocks x %u pages x %u B, %u plane(s)\n", k + 1,
+                    cand[k]->name, (unsigned)cand[k]->total_blocks,
+                    (unsigned)cand[k]->pages_per_block, (unsigned)cand[k]->page_size,
+                    cand[k]->planes);
+      k++;
+    }
+  Serial.print("  Pick> ");
+  int q = read_serial_line().toInt();
+  if (q < 1 || q > (int)k) { Serial.println("  [!] Invalid choice"); return; }
+  if (nand_profile_check(cand[q - 1], MAX_PAGE_SIZE) != NAND_PRF_OK) {
+    Serial.println("  [!] That profile failed its sanity checks"); return;
+  }
+  adopt_profile(cand[q - 1], NAND_CHIP_RESIDENT);
+  cfg_read_mode = (nand_read_mode_t)g_active.read_mode;
+  nand_chip_choice_t ch = {};
+  ch.mfr = g_id[0]; ch.dev = g_id[1];
+  strncpy(ch.name, g_active.name, sizeof(ch.name) - 1);
+  config_save_chip_choice(&ch);
+  Serial.printf("  Chip: %s (saved for this ID)\n", g_active.name);
+}
 
 // ---- Serial helpers ----
 
@@ -109,6 +152,8 @@ void show_menu() {
                              g_chip_state == NAND_CHIP_PUSHED ? " — pushed by host" : "");
   else         Serial.printf("  Detected: UNKNOWN (0x%02X 0x%02X) — manual geometry\n",
                              g_id[0], g_id[1]);
+  if (id_candidates() > 1)
+    Serial.printf("  [C] Choose chip:     %u resident chips share this ID\n", id_candidates());
   Serial.println("  -- Network --");
   Serial.printf( "  [1] WiFi SSID:       %s\n", cfg_ssid);
   Serial.printf( "  [2] WiFi Password:   %s\n", mask_password(cfg_pass).c_str());
@@ -145,6 +190,10 @@ void config_menu() {
     if (choice == 'S') { Serial.println("[*] Starting with current settings..."); return; }
 
     switch (choice) {
+      case 'C':
+        if (id_candidates() > 1) choose_chip();
+        else Serial.println("  [!] Only one chip matches this ID");
+        break;
       case '1':
         Serial.print("  Enter new SSID: ");
         { String v = read_serial_line();
@@ -437,12 +486,22 @@ void setup() {
   nand_prf_err_t perr;
   const active_profile_t *hit = nand_profile_find(table, n_resident, g_id[0], g_id[1],
                                                   g_id[2], &perr);
+  // Shared ID: a pick the user saved for this exact (mfr, dev) settles it.
+  bool from_choice = false;
+  if (!hit && perr == NAND_PRF_E_AMBIGUOUS_ID) {
+    nand_chip_choice_t ch;
+    if (config_load_chip_choice(&ch) && ch.mfr == g_id[0] && ch.dev == g_id[1]) {
+      hit = nand_profile_pick(table, n_resident, g_id[0], g_id[1], ch.name);
+      from_choice = hit != NULL;
+    }
+  }
   // Re-assert the cheap sanity checks on the resident entry before trusting it.
   if (hit && (perr = nand_profile_check(hit, MAX_PAGE_SIZE)) != NAND_PRF_OK) hit = NULL;
   if (hit) {
     adopt_profile(hit, NAND_CHIP_RESIDENT);
     cfg_read_mode = (nand_read_mode_t)g_active.read_mode;
-    Serial.printf("[*] Detected %s (0x%02X 0x%02X)\n", g_active.name, g_id[0], g_id[1]);
+    Serial.printf("[*] Detected %s (0x%02X 0x%02X)%s\n", g_active.name, g_id[0], g_id[1],
+                  from_choice ? " — saved choice for a shared ID; [C] in the menu changes it" : "");
   } else {
     g_chip_state = perr == NAND_PRF_E_AMBIGUOUS_ID ? NAND_CHIP_AMBIGUOUS : NAND_CHIP_UNKNOWN;
     Serial.printf("[!] %s for chip 0x%02X 0x%02X 0x%02X — using manual geometry\n",
@@ -451,7 +510,10 @@ void setup() {
       for (unsigned i = 0; i < n_resident; i++)
         if (table[i].id_mfr == g_id[0] && table[i].id_dev == g_id[1])
           Serial.printf("    candidate: %s\n", table[i].name);
-    Serial.println("    dump.py can push this chip's profile from the host database.");
+    if (perr == NAND_PRF_E_AMBIGUOUS_ID)
+      Serial.println("    Pick one with [C] in the menu (saved for next boot), or let dump.py push it.");
+    else
+      Serial.println("    dump.py can push this chip's profile from the host database.");
   }
 
   // ---- Load saved settings (over detected defaults), then configure ----

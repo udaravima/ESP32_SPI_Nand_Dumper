@@ -114,6 +114,16 @@ const active_profile_t *nand_profile_find(const active_profile_t *table, unsigne
   return hit;
 }
 
+const active_profile_t *nand_profile_pick(const active_profile_t *table, unsigned n,
+                                          uint8_t mfr, uint8_t dev, const char *name) {
+  if (!name || !name[0]) return NULL;
+  for (unsigned i = 0; i < n; i++)
+    if (table[i].id_mfr == mfr && table[i].id_dev == dev &&
+        strncmp(table[i].name, name, sizeof(table[i].name)) == 0)
+      return &table[i];
+  return NULL;
+}
+
 const active_profile_t *nand_profile_resident(unsigned *n) {
   *n = NAND_RESIDENT_COUNT;
   return NAND_RESIDENT;

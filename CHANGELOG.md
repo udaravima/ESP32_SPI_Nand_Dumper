@@ -7,6 +7,17 @@ follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- **Standalone pick for shared chip IDs.** When several resident chips share a
+  JEDEC ID, the serial menu offers **[C] Choose chip**; the choice is saved in
+  NVS and reused on boot, but only for the same ID and only while that chip is
+  still in the firmware's table.
+- **`ecc_stripper.py` uses the chip's bad-block marker.** The marker's offset,
+  width, good value and pages come from the profile (`--profile`, or the one
+  `dump.py` recorded in the sidecar) instead of a fixed spare[0] byte; a marker
+  on a block's last page now pads the whole block. `--profile` also supplies
+  the geometry when there is no sidecar.
+
+### Added
 - **Vendor-profile stage 3: push a profile for chips the firmware doesn't
   carry.** A client connection is now a small command session: `I` (what did
   the device detect), `P` (push a `PRF` profile blob), `A` (arm it) and `G`

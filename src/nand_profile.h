@@ -123,6 +123,13 @@ const active_profile_t *nand_profile_find(const active_profile_t *table, unsigne
                                           uint8_t mfr, uint8_t dev, uint8_t dev2,
                                           nand_prf_err_t *err);
 
+// The design § 5 tiebreak for a standalone device: the entry called `name`
+// (the user's saved choice), but only if it really carries the detected
+// (mfr, dev). A choice saved for another chip, or one no longer in the table
+// after a reflash, returns NULL and the ID stays ambiguous.
+const active_profile_t *nand_profile_pick(const active_profile_t *table, unsigned n,
+                                          uint8_t mfr, uint8_t dev, const char *name);
+
 // The resident table compiled from db/ (src/nand_profiles_generated.h).
 const active_profile_t *nand_profile_resident(unsigned *n);
 

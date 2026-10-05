@@ -212,6 +212,23 @@ void test_find_uses_dev2_and_never_guesses(void) {
   TEST_ASSERT_EQUAL_INT(NAND_PRF_E_AMBIGUOUS_ID, e);
 }
 
+void test_pick_honours_saved_choice_only_for_its_id(void) {
+  active_profile_t t[3];
+  t[0] = *resident("DS35Q1GA"); t[1] = t[0];
+  strcpy(t[1].name, "TWIN");
+  t[2] = *resident("MT29F2G01ABAGD");
+  // The saved choice resolves the shared ID that nand_profile_find refuses.
+  TEST_ASSERT_EQUAL_PTR(&t[1], nand_profile_pick(t, 3, 0xE5, 0x71, "TWIN"));
+  TEST_ASSERT_EQUAL_PTR(&t[0], nand_profile_pick(t, 3, 0xE5, 0x71, "DS35Q1GA"));
+  // A choice saved for another chip never applies to this one.
+  TEST_ASSERT_NULL(nand_profile_pick(t, 3, 0xE5, 0x71, "MT29F2G01ABAGD"));
+  TEST_ASSERT_NULL(nand_profile_pick(t, 3, 0x2C, 0x24, "TWIN"));
+  // A name no longer in the table (reflashed firmware) or none at all.
+  TEST_ASSERT_NULL(nand_profile_pick(t, 3, 0xE5, 0x71, "GONE"));
+  TEST_ASSERT_NULL(nand_profile_pick(t, 3, 0xE5, 0x71, ""));
+  TEST_ASSERT_NULL(nand_profile_pick(t, 3, 0xE5, 0x71, NULL));
+}
+
 void test_id_cross_check(void) {
   const active_profile_t *p = resident("MT29F2G01ABAGD");
   TEST_ASSERT_TRUE(nand_profile_id_matches(p, 0x2C, 0x24, 0x99));
@@ -268,6 +285,7 @@ int main(int, char **) {
   RUN_TEST(test_four_bit_field_reaches_index_15);
   RUN_TEST(test_find_resolves_resident_ids);
   RUN_TEST(test_find_uses_dev2_and_never_guesses);
+  RUN_TEST(test_pick_honours_saved_choice_only_for_its_id);
   RUN_TEST(test_id_cross_check);
   RUN_TEST(test_bbm_uses_profile_width_and_offset);
   RUN_TEST(test_bbm_pages);

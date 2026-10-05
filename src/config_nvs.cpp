@@ -20,6 +20,25 @@ bool config_load(nand_app_config_t *c) {
   return ok;
 }
 
+static const char *CFG_CHIP = "chip";
+
+bool config_load_chip_choice(nand_chip_choice_t *c) {
+  Preferences p;
+  if (!p.begin(CFG_NS, true)) return false;
+  bool ok = p.getBytesLength(CFG_CHIP) == sizeof(*c) &&
+            p.getBytes(CFG_CHIP, c, sizeof(*c)) == sizeof(*c);
+  p.end();
+  if (ok) c->name[sizeof(c->name) - 1] = '\0';
+  return ok;
+}
+
+void config_save_chip_choice(const nand_chip_choice_t *c) {
+  Preferences p;
+  if (!p.begin(CFG_NS, false)) return;
+  p.putBytes(CFG_CHIP, c, sizeof(*c));
+  p.end();
+}
+
 void config_save(const nand_app_config_t *c) {
   Preferences p;
   if (!p.begin(CFG_NS, false)) return;

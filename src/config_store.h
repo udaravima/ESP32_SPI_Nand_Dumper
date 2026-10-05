@@ -38,4 +38,16 @@ void config_validate(nand_app_config_t *c);
 bool config_load(nand_app_config_t *c);
 void config_save(const nand_app_config_t *c);
 
+// The user's pick for a JEDEC ID that several resident chips share (design
+// § 5, standalone). Kept apart from nand_app_config_t so saving it never
+// changes that record's layout. The device only honours it for the same
+// (mfr, dev) and only if the name is still in the resident table.
+typedef struct {
+  uint8_t mfr, dev;
+  char    name[24];
+} nand_chip_choice_t;
+
+bool config_load_chip_choice(nand_chip_choice_t *c);
+void config_save_chip_choice(const nand_chip_choice_t *c);
+
 #endif // CONFIG_STORE_H
