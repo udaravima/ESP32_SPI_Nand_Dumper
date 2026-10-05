@@ -26,23 +26,24 @@ be verified on real silicon.
 
 | File | Responsibility | Pure? |
 |---|---|---|
-| [`nand_chips.h`](../src/nand_chips.h) / [`.cpp`](../src/nand_chips.cpp) | `nand_chip_t` struct; `nand_chip_lookup(mfr, dev)` | ✅ host-testable |
-| `nand_chips_generated.h` | Generated `CHIPS[]` table (do not edit) | ✅ data |
+| [`nand_profile.h`](../src/nand_profile.h) / [`.cpp`](../src/nand_profile.cpp) | `active_profile_t` (the flat profile); ECC severity decode; tier 2/3 checks; `PRF` blob unpack; ID resolution; bad-block marker | ✅ host-testable |
+| `nand_profiles_generated.h` | Generated `NAND_RESIDENT[]` table from `db/` (do not edit) | ✅ data |
 | [`nand_addr.h`](../src/nand_addr.h) | `nand_row_addr()` — 32-bit row from block/page | ✅ host-testable |
 | [`dump_header.h`](../src/dump_header.h) / [`.cpp`](../src/dump_header.cpp) | 32-byte geometry header pack + CRC32 | ✅ host-testable |
 | [`config_store.h`](../src/config_store.h) / [`.cpp`](../src/config_store.cpp) | `nand_app_config_t`; `config_defaults()` / `config_validate()` clamp | ✅ host-testable |
 | [`config_nvs.cpp`](../src/config_nvs.cpp) | `config_load()` / `config_save()` — NVS blob via `Preferences` | ❌ hardware |
-| [`nand_ecc.h`](../src/nand_ecc.h) | `nand_ecc_uncorrectable()` / `nand_ecc_refresh_recommended()` — ECCS decode (datasheet Table 9) | ✅ host-testable |
 | [`sys_info.h`](../src/sys_info.h) / [`.cpp`](../src/sys_info.cpp) | `sys_recommend_batch_pages()` — memory-aware batch sizing | ✅ host-testable |
 | [`sys_info_esp.cpp`](../src/sys_info_esp.cpp) | `sys_info_report()` / `sys_free_dma_bytes()` — runtime chip/heap query | ❌ hardware |
 | [`board_pins.h`](../src/board_pins.h) | Per-target pins + `NAND_SPI_HOST` | — macros |
-| [`nand_seq.h`](../src/nand_seq.h) / [`.cpp`](../src/nand_seq.cpp) | Read-path sequencing (PAGE READ, READ FROM CACHE, plane-select column) over a bus callback | ✅ host-testable |
+| [`nand_seq.h`](../src/nand_seq.h) / [`.cpp`](../src/nand_seq.cpp) | Read-path sequencing (PAGE READ, READ FROM CACHE, READ ID, plane-select column) over a bus callback; verified read with quad → single fallback | ✅ host-testable |
 | [`nand_driver.h`](../src/nand_driver.h) / [`.cpp`](../src/nand_driver.cpp) | SPI transactions: reset, feature regs, page read, cache read, ECC toggle, verify, quad self-test | ❌ hardware |
 | [`wifi_transport.h`](../src/wifi_transport.h) / [`.cpp`](../src/wifi_transport.cpp) | WiFi connect + TCP stream | ❌ hardware |
 | [`main.cpp`](../src/main.cpp) | Boot flow, config menu, dump loop, header emission | ❌ hardware |
 
 **Boot flow** (`main.cpp` → `setup()`): bring SPI up at 1 MHz → read `9Fh` →
-`nand_chip_lookup` → pre-fill geometry → run the menu → apply ECC/read-mode →
+`nand_profile_find` in the resident table → copy it into the active profile and
+pre-fill geometry (unknown chip: a manual profile) → run the menu → apply the
+profile, ECC and read mode →
 (if quad) self-test with fallback → allocate the page buffer to the real page
 size → WiFi → send the geometry header → stream pages.
 
@@ -54,39 +55,45 @@ size → WiFi → send the geometry header → stream pages.
 | [`ecc_stripper.py`](../ecc_stripper.py) | `strip()` spare/OOB → main-area image; `load_geometry()` from the sidecar |
 | [`verify_dump.py`](../verify_dump.py) | CRC-verdict health report + CRC-aware cross-dump repair (`choose_page_sources`, `majority_bytes`) |
 | [`tools/binary_compare_fix.py`](../tools/binary_compare_fix.py) | Majority-vote repair across multiple dumps (byte-level, no CRC verdicts) |
-| [`tools/gen_chips.py`](../tools/gen_chips.py) | Validate `chips.yml`, emit the C table |
+| [`tools/chipdb.py`](../tools/chipdb.py) | Load, validate, resolve and flatten `db/`; pack the `PRF` blob |
+| [`tools/gen_profiles.py`](../tools/gen_profiles.py) | Emit the resident C table (and, with `--golden`, the test blobs) from `db/` |
+| [`tools/chips_yml_to_db.py`](../tools/chips_yml_to_db.py) | One-shot converter from a v3 `chips.yml` |
 
 The Python entry points all guard their side effects behind `if __name__ ==
 "__main__"` / `main()`, so they import cleanly for testing.
 
-## The chip registry and code generation
+## The chip database and code generation
 
-[`chips.yml`](../chips.yml) is the single human-editable source of truth.
-[`tools/gen_chips.py`](../tools/gen_chips.py) parses it, **validates** it, and
-emits `src/nand_chips_generated.h` (a `const nand_chip_t CHIPS[]` array). It runs
-two ways:
+[`db/`](../db/README.md) is the human-editable source of truth: families,
+vendor profiles and chips (design:
+`docs/superpowers/specs/2026-08-23-vendor-profile-architecture-design.md`).
+[`tools/chipdb.py`](../tools/chipdb.py) is the only place the layers are
+resolved; it flattens each chip into the 120-byte `active_profile_t` the device
+runs on. [`tools/gen_profiles.py`](../tools/gen_profiles.py) writes every
+`resident: true` chip into `src/nand_profiles_generated.h`. It runs:
 
-- **As a PlatformIO pre-hook** — `extra_scripts = pre:tools/gen_chips.py` in
+- **As a PlatformIO pre-hook** — `extra_scripts = pre:tools/gen_profiles.py` in
   `platformio.ini` regenerates the header on every build (auto-installing PyYAML
-  into PlatformIO's Python if missing).
-- **Standalone** — `python tools/gen_chips.py chips.yml src/nand_chips_generated.h`.
+  into PlatformIO's Python if missing). A chip that fails validation fails the
+  build.
+- **Standalone** — `python tools/gen_profiles.py`, and `--golden` for
+  `test/test_profile/golden_blobs.h`.
 
-The generated header is committed, so a fresh clone builds even before the hook
-runs; the hook keeps it in sync.
+The generated headers are committed, so a fresh clone builds even before the
+hook runs; CI fails if they drift from `db/`.
 
-**Validation** (build fails with a message naming the field) checks: all required
-fields present; every `{mfr_id, dev_id}` unique; `spare_size < page_size`;
-`pages_per_block` a power of two; and, if `has_qe_bit`, that `qe_feature_addr` and
-`qe_bit` are given. `page_addr_bits = log2(pages_per_block)` is **derived** by the
-generator, not hand-entered.
+**The seam that matters** is the byte layout: the Python `LAYOUT` table in
+`chipdb.py` and the C struct in `nand_profile.h` must agree. The C header
+`static_assert`s its size and key offsets, and the native golden-blob test
+unpacks the blobs Python packed and checks every field. The device re-runs the
+tier-2/3 checks (`nand_profile_check`) on the resident entry at boot.
 
 ## Adding a chip
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md) for the full walkthrough. In short: read
-the JEDEC id off the serial log, add a block to `chips.yml`, run `pio run`, verify
-a dump, open a PR. Chips with a Quad-Enable bit (Winbond W25N, GigaDevice GD5F)
-declare `has_qe_bit: true` plus `qe_feature_addr`/`qe_bit`, and the quad path
-enables it automatically; Micron parts have no QE bit (`has_qe_bit: false`).
+the JEDEC id off the serial log, add `db/chips/<part>.yml` pointing at the right
+vendor profile, run `python3 tools/chipdb.py` and `pio run`, verify a dump, open
+a PR. The quad-enable bit, ECC decode and bad-block marker come from the profile.
 
 ## Adding a board
 
@@ -160,8 +167,8 @@ together.
 | `native` | Host Unity tests for the pure modules |
 
 The `native` env needs two non-obvious settings: `test_build_src = yes` (so
-`pio test` compiles `src/`), and `build_src_filter = -<*> +<nand_chips.cpp>
-+<dump_header.cpp>` (so only the ESP-IDF-free modules compile on the host — the
+`pio test` compiles `src/`), and `build_src_filter = -<*> +<nand_profile.cpp>
++<dump_header.cpp> ...` (so only the ESP-IDF-free modules compile on the host — the
 Arduino sources would not build natively). `framework = arduino` is set per-board,
 not in `[env]`, so the native env doesn't inherit it.
 
@@ -170,7 +177,7 @@ not in `[env]`, so the native env doesn't inherit it.
 ```bash
 pip install -r requirements-dev.txt   # pyyaml, pytest
 python3 -m pytest                     # host tools + wire-format cross-check
-pio test -e native                    # pure C logic (lookup, row-address, header)
+pio test -e native                    # pure C logic, golden profile blobs, simulated NAND
 ```
 
 What each layer covers:

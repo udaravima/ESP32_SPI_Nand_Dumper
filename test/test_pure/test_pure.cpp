@@ -1,24 +1,9 @@
 #include <unity.h>
 #include <string.h>
-#include "nand_chips.h"
 #include "nand_addr.h"
 #include "dump_header.h"
 #include "config_store.h"
 #include "sys_info.h"
-#include "nand_ecc.h"
-
-void test_lookup_finds_micron(void) {
-  const nand_chip_t *c = nand_chip_lookup(0x2C, 0x24);
-  TEST_ASSERT_NOT_NULL(c);
-  TEST_ASSERT_EQUAL_UINT16(2176, c->page_size);
-  TEST_ASSERT_EQUAL_UINT16(2048, c->total_blocks);
-  TEST_ASSERT_EQUAL_UINT8(6, c->page_addr_bits);
-  TEST_ASSERT_FALSE(c->ecc_default_on);
-}
-
-void test_lookup_returns_null_for_unknown(void) {
-  TEST_ASSERT_NULL(nand_chip_lookup(0x00, 0x00));
-}
 
 void test_row_addr_block1024_does_not_alias_zero(void) {
   // The headline bug: 1024<<6 = 65536 overflows uint16_t to 0.
@@ -28,10 +13,6 @@ void test_row_addr_block1024_does_not_alias_zero(void) {
 void test_row_addr_last_page_of_2gbit(void) {
   // block 2047, page 63 -> 2047*64 + 63 = 131071 (17 bits)
   TEST_ASSERT_EQUAL_UINT32(131071u, nand_row_addr(2047, 63, 6));
-}
-
-void test_lookup_micron_is_two_plane(void) {
-  TEST_ASSERT_EQUAL_UINT8(2, nand_chip_lookup(0x2C, 0x24)->planes);
 }
 
 void test_plane_bit_sits_above_main_area(void) {
@@ -127,31 +108,11 @@ void test_batch_pages_respects_cap(void) {
   TEST_ASSERT_EQUAL_INT(8, sys_recommend_batch_pages(4 * 1024 * 1024, 2180, 8));
 }
 
-void test_ecc_uncorrectable_only_for_010(void) {
-  TEST_ASSERT_TRUE(nand_ecc_uncorrectable(0x02));   // the only uncorrectable code
-  TEST_ASSERT_FALSE(nand_ecc_uncorrectable(0x00));
-  TEST_ASSERT_FALSE(nand_ecc_uncorrectable(0x01));
-  TEST_ASSERT_FALSE(nand_ecc_uncorrectable(0x03));
-  TEST_ASSERT_FALSE(nand_ecc_uncorrectable(0x05));
-  TEST_ASSERT_TRUE(nand_ecc_uncorrectable(0xF2));   // upper (CRBSY etc.) bits masked
-}
-
-void test_ecc_refresh_recommended(void) {
-  TEST_ASSERT_TRUE(nand_ecc_refresh_recommended(0x03));
-  TEST_ASSERT_TRUE(nand_ecc_refresh_recommended(0x05));
-  TEST_ASSERT_FALSE(nand_ecc_refresh_recommended(0x00));
-  TEST_ASSERT_FALSE(nand_ecc_refresh_recommended(0x01));
-  TEST_ASSERT_FALSE(nand_ecc_refresh_recommended(0x02));   // uncorrectable is not "refresh"
-}
-
 int main(int, char **) {
   UNITY_BEGIN();
-  RUN_TEST(test_lookup_finds_micron);
-  RUN_TEST(test_lookup_returns_null_for_unknown);
   RUN_TEST(test_row_addr_block1024_does_not_alias_zero);
   RUN_TEST(test_row_addr_last_page_of_2gbit);
   RUN_TEST(test_row_addr_masks_page_field);
-  RUN_TEST(test_lookup_micron_is_two_plane);
   RUN_TEST(test_plane_bit_sits_above_main_area);
   RUN_TEST(test_cache_column_selects_odd_block_plane);
   RUN_TEST(test_cache_column_is_zero_on_single_plane);
@@ -162,7 +123,5 @@ int main(int, char **) {
   RUN_TEST(test_config_validate_raises_too_low_clock);
   RUN_TEST(test_batch_pages_scales_with_memory);
   RUN_TEST(test_batch_pages_respects_cap);
-  RUN_TEST(test_ecc_uncorrectable_only_for_010);
-  RUN_TEST(test_ecc_refresh_recommended);
   return UNITY_END();
 }
