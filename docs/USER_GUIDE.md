@@ -194,7 +194,9 @@ not compiled into the firmware, `dump.py` sends its profile to the ESP32 before
 the dump. The ESP32 checks it (including that the profile's ID matches the chip
 it read), echoes it back, and only uses it once `dump.py` confirms the echo. If
 several chips share the ID, `dump.py` asks which one you have and remembers the
-answer in `dump.config.json`. To use a specific profile, pass `--chip NAME`
+answer in `dump.config.json`. Without a PC, the serial menu offers **[C] Choose
+chip** for a shared ID; the pick is saved in the ESP32's flash and reused on
+every boot with that chip. To use a specific profile, pass `--chip NAME`
 (the ID check still applies). Chips that are in neither the firmware nor the
 database are dumped with the geometry set in the serial menu, as before.
 
@@ -231,16 +233,24 @@ python3 ecc_stripper.py target/nand_raw_dump_*.bin target/clean.bin \
         --meta target/nand_raw_dump_*.bin.meta.json
 ```
 
-Without a sidecar you can pass geometry explicitly:
+Without a sidecar, name the chip (its geometry comes from `db/`) or pass the
+geometry explicitly:
 
 ```bash
+python3 ecc_stripper.py raw.bin clean.bin --profile DS35Q1GA
 python3 ecc_stripper.py raw.bin clean.bin \
         --page-size 2176 --spare-size 128 --pages-per-block 64
 ```
 
-**Bad blocks:** the stripper checks the first spare byte of each block's first
-page. If it isn't `0xFF`, the block is flagged bad and written as `0xFF` padding
-so filesystem offsets stay aligned. It prints the list of bad blocks found.
+**Bad blocks:** where the factory bad-block marker sits differs by vendor, so
+the stripper takes it from the chip's profile: the marker's offset in the spare,
+its width, the "good" value, and which pages of the block carry it (the DS35's
+marker is 2 bytes; some chips mark the last page). The profile is the one named
+by `--profile`, else the one recorded in the sidecar, else the classic default
+of one byte at spare[0] of the first page. A block is bad if any marker byte
+differs from the good value, and it is written as `0xFF` padding so filesystem
+offsets stay aligned. The stripper prints which marker it used and the bad
+blocks it found. Markers are only reliable in raw (ECC off) dumps.
 
 ## Repairing dumps by majority vote
 

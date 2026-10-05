@@ -19,8 +19,9 @@
 - **Stage 3 notes** (2026-10-05): the arm is bound to the staged blob — `A`
   carries the blob's CRC32, and a mismatch disarms. Replies are `NRSP` frames
   (wire format in `docs/DEVELOPER_GUIDE.md`); a `G` while a push is unarmed is
-  refused. The `dump.config.json` choice cache is implemented; the standalone
-  NVS choice cache and the profile-aware `ecc_stripper.py` are not yet.
+  refused. The `dump.config.json` choice cache, the standalone NVS choice
+  cache (menu `[C]`) and the profile-aware `ecc_stripper.py` (bad-block marker
+  from the profile) are implemented.
 - **Author:** Udara Vimarsha (with Claude)
 - **Scope of this document:** Cycle 1 of a multi-cycle effort. The *schema* is
   designed for a full read+write programmer; this cycle *implements* the

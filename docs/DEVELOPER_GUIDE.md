@@ -52,7 +52,7 @@ size → WiFi → send the geometry header → stream pages.
 | File | Responsibility |
 |---|---|
 | [`dump.py`](../dump.py) | Receive the stream; `parse_header`, `recv_exact`, `write_metadata`; network flow under `main()` |
-| [`ecc_stripper.py`](../ecc_stripper.py) | `strip()` spare/OOB → main-area image; `load_geometry()` from the sidecar |
+| [`ecc_stripper.py`](../ecc_stripper.py) | `strip()` spare/OOB → main-area image, bad blocks found by the profile's marker; `load_geometry()` from the sidecar |
 | [`verify_dump.py`](../verify_dump.py) | CRC-verdict health report + CRC-aware cross-dump repair (`choose_page_sources`, `majority_bytes`) |
 | [`tools/binary_compare_fix.py`](../tools/binary_compare_fix.py) | Majority-vote repair across multiple dumps (byte-level, no CRC verdicts) |
 | [`tools/chipdb.py`](../tools/chipdb.py) | Load, validate, resolve and flatten `db/`; pack the `PRF` blob |
