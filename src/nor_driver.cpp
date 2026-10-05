@@ -40,13 +40,13 @@ void nor_begin(void) { nor_seq_begin(&s_nor); }
 void nor_end(void) { nor_seq_end(&s_nor); }
 
 void nor_read(uint32_t addr, uint8_t *buf, int len) {
-  nor_seq_read(&s_nor, addr, buf, len, s_nor.quad);
+  nor_seq_read(&s_nor, addr, buf, len, s_nor.quad_on);
 }
 
 nand_page_result_t nor_read_verified(uint32_t addr, uint8_t *buf, int len,
                                      int max_retries, uint32_t *retry_count) {
   uint32_t before = retry_count ? *retry_count : 0;
-  bool was_quad = s_nor.quad;
+  bool was_quad = s_nor.quad_on;
   nand_page_result_t r = nor_seq_read_verified(&s_nor, addr, buf, s_scratch, len,
                                                max_retries, retry_count);
   if (retry_count && *retry_count != before)
@@ -55,7 +55,7 @@ nand_page_result_t nor_read_verified(uint32_t addr, uint8_t *buf, int len,
   if (r == NAND_PAGE_OK_SINGLE)
     Serial.printf("[!] Quad read unstable at 0x%08X; recovered with a single read\n",
                   (unsigned)addr);
-  if (was_quad && !s_nor.quad)
+  if (was_quad && !s_nor.quad_on)
     Serial.printf("[!] %u units needed the single fallback; reading the rest single x1\n",
                   (unsigned)s_nor.quad_fallbacks);
   return r;
@@ -77,6 +77,6 @@ bool nor_quad_selftest(uint32_t addr, int len) {
 
 void nor_set_read_mode(nand_read_mode_t m) { nor_seq_set_quad(&s_nor, m == NAND_READ_QUAD); }
 nand_read_mode_t nor_get_read_mode(void) {
-  return s_nor.quad ? NAND_READ_QUAD : NAND_READ_SINGLE;
+  return s_nor.quad_on ? NAND_READ_QUAD : NAND_READ_SINGLE;
 }
 uint32_t nor_quad_fallbacks(void) { return s_nor.quad_fallbacks; }

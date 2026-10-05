@@ -40,7 +40,7 @@ static int dump_units(const uint32_t *units, int n, bool verified) {
   for (int k = 0; k < n; k++) {
     uint32_t addr = units[k] * UNIT;
     if (verified) nor_seq_read_verified(&seq, addr, got, scratch, UNIT, 3, NULL);
-    else nor_seq_read(&seq, addr, got, UNIT, seq.quad);
+    else nor_seq_read(&seq, addr, got, UNIT, seq.quad_on);
     for (int i = 0; i < UNIT; i++)
       if (got[i] != sim_nor_byte(addr + i)) { bad++; break; }
   }
@@ -159,7 +159,7 @@ void test_quad_with_qe_set_reads_exactly(void) {
   uint32_t u[8];
   TEST_ASSERT_EQUAL_INT(0, dump_units(u, sample_units(16 * MIB, u), true));
   TEST_ASSERT_TRUE(chip.quad_reads > 0);
-  TEST_ASSERT_TRUE(seq.quad);
+  TEST_ASSERT_TRUE(seq.quad_on);
   TEST_ASSERT_EQUAL_INT(0, chip.protocol_errors);
 }
 
@@ -170,7 +170,7 @@ void test_quad_with_qe_clear_falls_back_to_single(void) {
   nor_seq_set_quad(&seq, true);
   uint32_t u[8];
   TEST_ASSERT_EQUAL_INT(0, dump_units(u, sample_units(16 * MIB, u), true));
-  TEST_ASSERT_FALSE(seq.quad);                               // gave up on quad
+  TEST_ASSERT_FALSE(seq.quad_on);                               // gave up on quad
   TEST_ASSERT_EQUAL_UINT32(NAND_QUAD_FALLBACK_LIMIT, seq.quad_fallbacks);
 }
 

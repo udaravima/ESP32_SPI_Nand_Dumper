@@ -50,7 +50,7 @@ typedef struct {
   uint8_t  dummy_x1, dummy_x4;
   uint8_t  qer;                   // JESD216 quad-enable requirement
   bool     in_4byte;              // B7h was sent and not yet undone
-  bool     quad;                  // current read mode
+  bool     quad_on;               // current read mode (not `quad`: the ESP32 toolchain headers #define it)
   uint32_t quad_fallbacks;        // units recovered single this session
 } nor_seq_t;
 

@@ -23,7 +23,7 @@ void nor_seq_apply(nor_seq_t *s, const active_profile_t *p) {
 }
 
 void nor_seq_set_quad(nor_seq_t *s, bool quad) {
-  s->quad = quad;
+  s->quad_on = quad;
   s->quad_fallbacks = 0;
 }
 
@@ -92,10 +92,10 @@ static bool settle(nor_seq_t *s, uint32_t addr, uint8_t *buf, uint8_t *scratch, 
 nand_page_result_t nor_seq_read_verified(nor_seq_t *s, uint32_t addr, uint8_t *buf,
                                          uint8_t *scratch, int len, int max_retries,
                                          uint32_t *retry_count) {
-  if (settle(s, addr, buf, scratch, len, max_retries, s->quad, retry_count)) return NAND_PAGE_OK;
-  if (!s->quad) return NAND_PAGE_UNSTABLE;
+  if (settle(s, addr, buf, scratch, len, max_retries, s->quad_on, retry_count)) return NAND_PAGE_OK;
+  if (!s->quad_on) return NAND_PAGE_UNSTABLE;
   if (!settle(s, addr, buf, scratch, len, max_retries, false, retry_count))
     return NAND_PAGE_UNSTABLE;
-  if (++s->quad_fallbacks >= NAND_QUAD_FALLBACK_LIMIT) s->quad = false;
+  if (++s->quad_fallbacks >= NAND_QUAD_FALLBACK_LIMIT) s->quad_on = false;
   return NAND_PAGE_OK_SINGLE;
 }
