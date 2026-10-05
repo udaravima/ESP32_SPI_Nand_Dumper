@@ -1,0 +1,10 @@
+MT29F2G01ABAGD:
+  id: {mfr: 0x2C, dev: 0x24, dev2: null, onfi: null}
+  family: spi-nand
+  profile: micron
+  geometry: {page_size: 2176, spare_size: 128, pages_per_block: 64, total_blocks: 2048, planes: 2}
+  read_mode: single
+  vcc_mv: 3300
+  resident: true
+  datasheet: "docs/datasheets/m79a-2gb-1-8v-nand-spi.pdf (M79A family; that file is the 1.8 V variant)"
+  notes: "2Gb SLC, 8-bit/512 on-die ECC; block RA6 selects the plane"

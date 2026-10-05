@@ -1,0 +1,10 @@
+DS35Q1GA:
+  id: {mfr: 0xE5, dev: 0x71, dev2: null, onfi: null}
+  family: spi-nand
+  profile: dosilicon
+  geometry: {page_size: 2112, spare_size: 64, pages_per_block: 64, total_blocks: 1024, planes: 1}
+  read_mode: single
+  vcc_mv: 3300
+  resident: true
+  datasheet: "docs/datasheets/DS35x1GAxxx_SPI_NAND.pdf"
+  notes: "1Gb SLC (FORESEE/Dosilicon)"
