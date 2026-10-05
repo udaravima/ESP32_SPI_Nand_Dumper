@@ -1,6 +1,7 @@
 // A stand-in device for tests/test_dump_session.py: the real session module
 // (src/nand_session.cpp) on stdin/stdout, with the detected ID from argv
-// (the NAND view, then optionally the NOR view).
+// (the NAND view, then optionally the NOR view, then optionally the I2C ACK
+// mask and the SPI EEPROM status byte).
 // It lets dump.py's client talk to the firmware's own C code, not a mock.
 #include "nand_session.h"
 #include <stdio.h>
@@ -29,6 +30,11 @@ int main(int argc, char **argv) {
   for (int i = 0; i < 3; i++) s.id[i] = (uint8_t)strtol(argv[1 + i], NULL, 16);
   if (argc >= 7)
     for (int i = 0; i < 3; i++) s.nor_id[i] = (uint8_t)strtol(argv[4 + i], NULL, 16);
+  s.spi_ee_status = 0xFF;
+  if (argc >= 9) {
+    s.i2c_ack_mask = (uint8_t)strtol(argv[7], NULL, 16);
+    s.spi_ee_status = (uint8_t)strtol(argv[8], NULL, 16);
+  }
   s.chip_state = NAND_CHIP_UNKNOWN;
   s.active = &active;
   s.max_page_size = 8192;

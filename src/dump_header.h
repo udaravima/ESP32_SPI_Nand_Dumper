@@ -10,6 +10,10 @@
 #define DUMP_FLAG_PAGECRC  0x08   // v2: each page is followed by a 4-byte CRC32 seal
 #define DUMP_FLAG_NOR      0x10   // SPI NOR: pages are 4 KiB read units, spare_size 0,
                                   // mfr/dev are the plain 9Fh ID's first two bytes
+#define DUMP_FLAG_EEPROM   0x20   // serial EEPROM: pages are 256 B read units (or the
+                                  // whole part), spare_size 0, mfr/dev are 0 ...
+#define DUMP_FLAG_I2C      0x40   // ... except on I2C (24xx), where mfr_id is the
+                                  // device address the part answered at
 
 typedef struct {
   uint16_t page_size, spare_size, pages_per_block, total_blocks;

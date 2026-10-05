@@ -1,4 +1,4 @@
-"""ESP32 SPI NAND/NOR Dumper - PC-side TCP receiver.
+"""ESP32 SPI NAND/NOR + serial EEPROM Dumper - PC-side TCP receiver.
 
 Connects to the ESP32 over WiFi TCP, sends a 'GO' trigger, reads a 32-byte
 geometry header, then streams the raw NAND dump to a timestamped file in
@@ -10,9 +10,15 @@ database (db/, via tools/chipdb.py), pushes the flat profile ('P'), checks the
 device's echo of it, and arms it ('A'). Firmware older than v4 does not answer
 'I'; dump.py then sends a bare 'G', as it always did.
 
+Serial EEPROMs (24xx on I2C, 25xx on SPI) have no ID, so the part is named:
+--chip takes a DB name or an alias (AT24C256, 25LC040A). The device still
+checks that the part is plausibly there (I2C: it answers at every address it
+occupies; SPI: its status register reads like a 25xx).
+
 Usage:
     python3 dump.py
     python3 dump.py --chip DS35Q1GA     # push this DB profile (ID still cross-checked)
+    python3 dump.py --chip AT24C256     # serial EEPROM: name the part
 
 Set ESP32_IP to the address printed in the ESP32 serial monitor.
 """
@@ -82,6 +88,7 @@ RESP_MAGIC = b"NRSP"
 RESP_HDR_FMT = "<4sBBH"          # magic, cmd, status, payload length
 INFO_FMT = "<BBI3sB24s"          # session ver, schema ver, max page, id[3], state, name
 INFO_V2_FMT = INFO_FMT + "3sB"   # session v2: + SPI NOR id view[3], active family
+INFO_V3_FMT = INFO_V2_FMT + "BB"  # session v3: + I2C ACK mask (0x50..0x57), SPI RDSR
 ECHO_FMT = "<24sIIIIB4s3sI"      # name, page, spare, ppb, blocks, planes,
                                  # expected id (mfr, dev, dev2, flags), detected id, blob crc
 ECHO_V2_FMT = ECHO_FMT + "B"     # session v2: + profile family
@@ -91,8 +98,10 @@ PRF_ERRORS = ["OK", "E_BAD_MAGIC", "E_SCHEMA_VER", "E_BAD_LEN", "E_BAD_CRC",
               "E_STRUCTURE", "E_GEOMETRY", "E_PAGE_TOO_BIG", "E_ID_MISMATCH",
               "E_AMBIGUOUS_ID", "E_UNKNOWN_ID", "E_NOT_STAGED", "E_ARM_CRC",
               "E_NOT_ARMED", "E_BAD_CMD", "E_TIMEOUT"]
-CHIP_STATES = {0: "resident", 1: "unknown", 2: "ambiguous", 3: "pushed", 4: "sfdp"}
-FAMILIES = {0: "spi-nand", 1: "spi-nor"}
+CHIP_STATES = {0: "resident", 1: "unknown", 2: "ambiguous", 3: "pushed", 4: "sfdp",
+               5: "picked"}
+FAMILIES = {0: "spi-nand", 1: "spi-nor", 2: "i2c-eeprom", 3: "spi-eeprom"}
+EEPROM_FAMILIES = ("i2c-eeprom", "spi-eeprom")
 
 
 class SessionError(Exception):
@@ -134,28 +143,63 @@ def command(sock, cmd, payload=b""):
 def parse_info(body):
     """'I' reply. `mfr/dev/dev2` is the SPI NAND view of the ID (9Fh + dummy
     byte); session v2 adds `nor_id`, the plain-9Fh SPI NOR view, and the
-    active profile's family. v1 firmware knows only SPI NAND."""
+    active profile's family; v3 adds the EEPROM presence bytes (`i2c_ack_mask`,
+    `spi_ee_status`). v1 firmware knows only SPI NAND."""
     v2 = len(body) >= struct.calcsize(INFO_V2_FMT)
-    fields = struct.unpack_from(INFO_V2_FMT if v2 else INFO_FMT, body)
+    v3 = len(body) >= struct.calcsize(INFO_V3_FMT)
+    fields = struct.unpack_from(INFO_V3_FMT if v3 else INFO_V2_FMT if v2 else INFO_FMT, body)
     sver, schema, max_page, ident, state, name = fields[:6]
     return {"session_ver": sver, "schema_ver": schema, "max_page_size": max_page,
             "mfr": ident[0], "dev": ident[1], "dev2": ident[2],
             "nor_id": tuple(fields[6]) if v2 else None,
             "family": FAMILIES.get(fields[7], "spi-nand") if v2 else "spi-nand",
+            "i2c_ack_mask": fields[8] if v3 else None,
+            "spi_ee_status": fields[9] if v3 else None,
             "state": CHIP_STATES.get(state, f"state{state}"),
             "name": name.split(b"\0", 1)[0].decode(errors="replace")}
 
 
 def detected_id(info, family):
-    """The detected ID as a chip of `family` reports it."""
+    """The detected ID as a chip of `family` reports it. A serial EEPROM has
+    none; its view is the presence byte the device compared (session v3)."""
     if family == "spi-nor":
         return info.get("nor_id")
+    if family == "i2c-eeprom":
+        return (info.get("i2c_ack_mask") or 0, 0, 0)
+    if family == "spi-eeprom":
+        sr = info.get("spi_ee_status")
+        return (0xFF if sr is None else sr, 0, 0)
     return (info["mfr"], info["dev"], info["dev2"])
 
 
 def nor_id_plausible(nid):
     """Same rule as the firmware: a real manufacturer byte, not a flat bus."""
     return bool(nid) and nid[0] not in (0x00, 0xFF)
+
+
+def spi_ee_status_plausible(sr):
+    """Same rule as the firmware: a 25xx/FRAM reads status bits 6..4 as 0."""
+    return sr is not None and sr & 0x70 == 0
+
+
+def eeprom_hint(info, db):
+    """What an unidentified socket might hold, from the v3 presence bytes:
+    I2C parts whose address set answered, or a SPI EEPROM status."""
+    from tools import chipdb
+    hints = []
+    mask = info.get("i2c_ack_mask")
+    if mask:
+        fits = [n for n, c in db["chips"].items() if c["family"] == "i2c-eeprom"
+                and chipdb.eeprom_i2c_base(chipdb.flatten(db, n), mask) is not None]
+        found = ", ".join(f"0x{0x50 + i:02X}" for i in range(8) if mask >> i & 1)
+        hints.append(f"an I2C EEPROM answers at {found}; parts that fit: {', '.join(fits)}")
+    nand_flat = (info["mfr"], info["dev"]) in ((0, 0), (0xFF, 0xFF))
+    if nand_flat and not nor_id_plausible(info.get("nor_id")) and \
+            spi_ee_status_plausible(info.get("spi_ee_status")):
+        hints.append(f"a SPI EEPROM may be in the socket (status "
+                     f"0x{info['spi_ee_status']:02X}); 25xx parts are listed by "
+                     "tools/chipdb.py --list --family spi-eeprom")
+    return hints
 
 
 def query_info(sock, timeout=INFO_TIMEOUT):
@@ -244,9 +288,13 @@ def resolve_profile(info, chip, saved, ask=None, db_root=None):
     from tools import chipdb
     db = chipdb.load_db(db_root) if db_root else chipdb.load_db()
     if chip:
-        flat = chipdb.flatten(db, chip)
+        flat = chipdb.flatten(db, chipdb.resolve_name(db, chip))
         chipdb.check_flat(flat)
-        return flat, True
+        if flat["family"] in EEPROM_FAMILIES and (info.get("session_ver") or 1) < 3:
+            raise chipdb.ChipDBError(f"{flat['name']} is a serial EEPROM; this firmware "
+                                     "predates EEPROM support (session v3)")
+        # An EEPROM pick is not tied to an ID, so it is never remembered.
+        return flat, flat["family"] not in EEPROM_FAMILIES
     chips = saved.get("chips") or {}
     # Look the chip up in each family through that family's view of the ID
     # (same rule as the firmware's chip_detect): SPI NAND always, SPI NOR when
@@ -301,6 +349,8 @@ FLAG_QUAD = 0x02
 FLAG_VERIFY = 0x04
 FLAG_PAGECRC = 0x08   # proto v2: each page followed by a 4-byte CRC32 seal
 FLAG_NOR = 0x10       # SPI NOR: pages are 4 KiB read units, no spare area
+FLAG_EEPROM = 0x20    # serial EEPROM: 256 B read units (or the whole part)
+FLAG_I2C = 0x40       # ... on I2C; mfr_id is the device address it answered at
 
 # Result of streaming a dump off the wire.
 ReceiveResult = namedtuple(
@@ -394,6 +444,13 @@ def write_badpages(out_path, bad_pages, total_pages):
                    "bad_pages": bad_pages}, f)
 
 
+def dump_family(flags):
+    """The chip family a dump header's flags describe."""
+    if flags & FLAG_EEPROM:
+        return "i2c-eeprom" if flags & FLAG_I2C else "spi-eeprom"
+    return "spi-nor" if flags & FLAG_NOR else "spi-nand"
+
+
 def write_metadata(out_path, geom, byte_count, result=None, profile=None):
     """Write the <out_path>.meta.json sidecar next to the dump."""
     meta = {
@@ -402,7 +459,7 @@ def write_metadata(out_path, geom, byte_count, result=None, profile=None):
         "quad": bool(geom["flags"] & FLAG_QUAD),
         "verify": bool(geom["flags"] & FLAG_VERIFY),
         "page_crc": bool(geom["flags"] & FLAG_PAGECRC),
-        "family": "spi-nor" if geom["flags"] & FLAG_NOR else "spi-nand",
+        "family": dump_family(geom["flags"]),
         "proto_version": geom.get("proto_version"),
         "bytes_received": byte_count,
         "timestamp": datetime.datetime.now().isoformat(),
@@ -463,6 +520,11 @@ def prepare_profile(sock, chip, saved):
         if info["state"] in ("unknown", "ambiguous"):
             print("[!] Chip not in the database: the device will dump with the geometry "
                   "set in its serial menu.")
+            try:
+                for h in eeprom_hint(info, chipdb.load_db()):
+                    print(f"    Hint: {h}. Name the part with --chip.")
+            except chipdb.ChipDBError:
+                pass
         return {"name": info["name"], "source": info["state"], "family": info["family"]}
 
     blob = chipdb.pack_blob(flat)
@@ -527,8 +589,13 @@ def main(argv=None):
     page_size = geom["page_size"]
     pagecrc = bool(geom["flags"] & FLAG_PAGECRC)
     nor = bool(geom["flags"] & FLAG_NOR)
-    out_file = os.path.join(out_dir, f"{'nor' if nor else 'nand'}_raw_dump_{stamp}.bin")
-    if nor:
+    family = dump_family(geom["flags"])
+    prefix = {"spi-nand": "nand", "spi-nor": "nor"}.get(family, "eeprom")
+    out_file = os.path.join(out_dir, f"{prefix}_raw_dump_{stamp}.bin")
+    if family in EEPROM_FAMILIES:
+        where = (f"at I2C 0x{geom['mfr_id']:02X}" if family == "i2c-eeprom" else "on SPI")
+        print(f"[*] Serial EEPROM {where} | {total_bytes} bytes in {page_size} B units")
+    elif nor:
         print(f"[*] SPI NOR 0x{geom['mfr_id']:02X} 0x{geom['dev_id']:02X} | "
               f"{total_bytes >> 10} KiB in {page_size} B units "
               f"| {'quad' if geom['flags'] & FLAG_QUAD else 'single'}")

@@ -18,6 +18,11 @@
 // NOR, page_size is the dump frame (one 4 KiB read unit), spare_size is 0, the
 // NAND-only fields (page read, feature addresses, ECC, BBM, OOB) are zero, and
 // the tail carries the address width, dummy cycles and quad-enable location.
+//
+// Serial EEPROMs (I2C 24xx, SPI 25xx; docs/superpowers/specs/
+// 2026-10-05-eeprom-design.md) reuse the NOR framing: no ID (id_n_bytes 0),
+// addr_bytes is the word address width, and two former pad bytes say where
+// address bits above it travel (I2C device address, or SPI opcode bit 3).
 
 typedef enum { NAND_READ_SINGLE = 0, NAND_READ_QUAD = 1 } nand_read_mode_t;
 
@@ -35,7 +40,18 @@ typedef enum {
 #define NAND_ID_METHOD_DUMMY     1
 #define NAND_ID_METHOD_NONE      2      // 9Fh, then data: SPI NOR's plain JEDEC read
 
-typedef enum { CHIP_FAMILY_SPI_NAND = 0, CHIP_FAMILY_SPI_NOR = 1 } chip_family_t;
+typedef enum {
+  CHIP_FAMILY_SPI_NAND = 0,
+  CHIP_FAMILY_SPI_NOR = 1,
+  CHIP_FAMILY_I2C_EEPROM = 2,         // 24xx: no ID, picked by name
+  CHIP_FAMILY_SPI_EEPROM = 3,         // 25xx / FRAM: no ID, picked by name
+} chip_family_t;
+#define CHIP_FAMILY_COUNT 4
+static inline bool chip_family_is_eeprom(uint8_t f) {
+  return f == CHIP_FAMILY_I2C_EEPROM || f == CHIP_FAMILY_SPI_EEPROM;
+}
+#define EEPROM_MIN_SIZE 128u          // 24C01
+#define EEPROM_MAX_SIZE (512u << 10)  // M95M04
 #define CHIP_FAMILY_ANY 0xFF            // nand_profile_find_family: no filter
 
 // addr4_mode: how a SPI NOR part above 16 MiB is addressed.
@@ -81,7 +97,11 @@ typedef struct {
   uint8_t  addr4_mode;                // NOR_ADDR4_*
   uint8_t  dummy_x1, dummy_x4;        // dummy cycles after the address, x1 / x4 read
   uint8_t  qer;                       // JESD216 quad-enable requirement (0 = no QE bit)
-  uint8_t  _pad1[5];
+  // EEPROM only, zero otherwise: address bits above addr_bytes, carried in
+  // the I2C device address (24C04..16, 24CM01/02, 24xx1025) or in bit 3 of
+  // the SPI opcode (25xx040), starting at bit dev_addr_shift.
+  uint8_t  dev_addr_bits, dev_addr_shift;
+  uint8_t  _pad1[3];
 } active_profile_t;
 
 #define NAND_PROFILE_SIZE 128
@@ -93,6 +113,7 @@ static_assert(offsetof(active_profile_t, vcc_mv) == 78, "layout drift");
 static_assert(offsetof(active_profile_t, oob_free) == 86, "layout drift");
 static_assert(offsetof(active_profile_t, family) == 77, "layout drift");
 static_assert(offsetof(active_profile_t, addr_bytes) == 118, "layout drift");
+static_assert(offsetof(active_profile_t, dev_addr_bits) == 123, "layout drift");
 
 // Fail-closed error codes (design § 6).
 typedef enum {
@@ -143,6 +164,7 @@ bool nand_profile_id_matches(const active_profile_t *p, uint8_t mfr, uint8_t dev
 
 // Resolve a detected JEDEC ID in `table` (design § 5): candidates by
 // (mfr, dev); an entry that declares dev2 is a candidate only if dev2 matches.
+// EEPROM entries carry no ID and are never candidates.
 // If several remain, the dev2-declaring ones win. Returns the single match, or
 // NULL with *err = NAND_PRF_E_UNKNOWN_ID / NAND_PRF_E_AMBIGUOUS_ID. Never guesses.
 const active_profile_t *nand_profile_find(const active_profile_t *table, unsigned n,
@@ -172,6 +194,11 @@ void nand_profile_manual(active_profile_t *p, uint32_t page_size, uint32_t spare
 // dummy, any clock the part allows), 6Bh for quad, 4-byte addressing through
 // B7h above 16 MiB. size_bytes must be a power of two >= 4 KiB.
 void nand_profile_manual_nor(active_profile_t *p, uint32_t size_bytes);
+
+// The resident entry called `name` within one family (an EEPROM pick, which
+// has no ID to match), or NULL.
+const active_profile_t *nand_profile_by_name(const active_profile_t *table, unsigned n,
+                                             uint8_t family, const char *name);
 
 // Total bytes the profile covers (page_size * pages_per_block * total_blocks).
 static inline uint32_t nand_profile_bytes(const active_profile_t *p) {

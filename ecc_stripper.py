@@ -131,10 +131,11 @@ def main(argv=None):
     else:
         ap.error("provide --meta, --profile, or all of "
                  "--page-size/--spare-size/--pages-per-block")
-    if ss == 0 or (flat and flat["family"] == "spi-nor"):
-        # SPI NOR (or any dump without a spare area): the raw dump is the image.
+    if ss == 0 or (flat and flat["family"] != "spi-nand"):
+        # SPI NOR, serial EEPROM (or any dump without a spare area): the raw
+        # dump is the image.
         shutil.copyfile(a.input, a.output)
-        print("[*] No spare area (SPI NOR dump): nothing to strip; copied as is")
+        print("[*] No spare area (SPI NOR / EEPROM dump): nothing to strip; copied as is")
         print(f"[*] wrote {a.output}")
         return
     if meta and meta.get("ecc_on"):
