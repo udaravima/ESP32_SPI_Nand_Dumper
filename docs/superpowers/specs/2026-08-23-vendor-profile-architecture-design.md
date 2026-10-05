@@ -1,7 +1,7 @@
 # Vendor/Family Profile Architecture — Design
 
 - **Date:** 2026-08-23
-- **Status:** Approved design; stage 1 (host DB + `tools/chipdb.py`) implemented
+- **Status:** Approved design; stages 1 (host DB + `tools/chipdb.py`) and 2 (resident table + read-path refactor) implemented
 - **Revision:** r2 — folded in peer review (2026-08-23). Schema changes made
   while `schema_ver` is still unshipped: `ecc_map[16]` (out-of-bounds fix on the
   decode line), `read_id` moved to the chip layer, OOB uniform-sections →

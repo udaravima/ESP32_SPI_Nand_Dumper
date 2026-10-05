@@ -8,8 +8,11 @@ Three layers, resolved and flattened on the host by `tools/chipdb.py`:
 
 Design: `docs/superpowers/specs/2026-08-23-vendor-profile-architecture-design.md`.
 
-**Status: stage 1 (host only).** The firmware still builds from `chips.yml`; a
-test keeps the two in agreement until stage 2 moves the device onto this DB.
+**Status: stage 2.** The firmware builds from this DB: every chip tagged
+`resident: true` is flattened by `tools/gen_profiles.py` into
+`src/nand_profiles_generated.h` on each build, and the device reads its opcodes,
+ECC decode, quad-enable bit and bad-block marker from that profile. Pushing a
+profile for a non-resident chip from the host is stage 3.
 
 Check the DB and see what the device would receive:
 

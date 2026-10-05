@@ -1,59 +1,66 @@
 # Adding a NAND chip
 
-The chip registry lives in [`chips.yml`](chips.yml). Adding your chip is a few
-lines of YAML plus a pull request — no C required.
+Chips live in the chip database under [`db/`](db/README.md): one small YAML file
+per part in `db/chips/`, pointing at a vendor profile in `db/profiles/` and a
+bus family in `db/families/`. Adding your chip is a few lines of YAML plus a
+pull request — no C required.
 
 ## Steps
 
 1. **Read the JEDEC id.** Wire your chip per the [README](README.md) and boot
-   with the serial monitor open. The log prints the manufacturer and device id,
-   e.g. `Detected UNKNOWN (0x2C 0x24)` or your router's own probe line
-   (`mfr_id=0x2c, dev_id=0x24`).
+   with the serial monitor open. The log prints the manufacturer, device and
+   third ID byte, e.g. `E_UNKNOWN_ID for chip 0x2C 0x24 0x2C`, or your router's
+   own probe line (`mfr_id=0x2c, dev_id=0x24`).
 
-2. **Add a block to `chips.yml`** (copy an existing entry):
+2. **Pick the profile.** A profile holds what differs between vendors: how the
+   ECC status register is decoded, the quad-enable bit, and the OOB layout with
+   the bad-block marker. Use the existing one for your vendor (`micron`,
+   `dosilicon`). If there isn't one, add `db/profiles/<vendor>.yml` from the
+   vendor's datasheet; the named ECC schemes (`generic2`, `micron3`, `gd_uc`,
+   `xtx4`, `xtx_g0xa`) are listed in [`tools/chipdb.py`](tools/chipdb.py).
 
-   ```yaml
-     YOUR_PART_NAME:
-       mfr_id:  0x2C          # from the serial log
-       dev_id:  0x24
-       page_size:       2176  # total bytes/page = main + spare (from datasheet)
-       spare_size:      128
-       pages_per_block: 64    # must be a power of two
-       total_blocks:    2048
-       bad_block_mark:  0x00  # value written to spare[0] of a bad block's page 0
-       has_qe_bit:      false # true for Winbond/GigaDevice (see below)
-       ecc_default:     off
-       vcc_mv:          3300  # 1800 parts need a level shifter
-       notes: "cite the datasheet here"
-   ```
-
-   For multi-plane chips (the datasheet's block address says a bit such as
-   `RA6` "controls the plane selection", e.g. Micron MT29F2G01), add
-   `planes: 2`. Omitting it means a single plane; getting it wrong makes every
-   odd block read back the other plane's data.
-
-   For chips that need a Quad-Enable bit (Winbond W25N, GigaDevice GD5F), add:
+3. **Add `db/chips/YOUR_PART.yml`** (copy an existing chip):
 
    ```yaml
-       has_qe_bit:      true
-       qe_feature_addr: 0xB0
-       qe_bit:          0x01
+   YOUR_PART:
+     id: {mfr: 0x2C, dev: 0x24, dev2: null, onfi: null}   # from the serial log
+     family: spi-nand
+     profile: micron
+     geometry: {page_size: 2176, spare_size: 128, pages_per_block: 64,
+                total_blocks: 2048, planes: 1}
+     read_mode: single
+     vcc_mv: 3300          # 1800 parts need a level shifter
+     resident: true        # compile into the firmware
+     datasheet: "docs/datasheets/... or a URL"   # required
+     notes: "where the chip came from"
    ```
 
-3. **Build.** `pio run -e esp32dev` regenerates `src/nand_chips_generated.h`
-   from `chips.yml` and compiles. Entries are validated at build time — a
-   malformed one fails the build with a message naming the offending field.
+   `page_size` is main + spare. For multi-plane chips (the datasheet's block
+   address says a bit such as `RA6` "controls the plane selection", e.g. Micron
+   MT29F2G01), set `planes: 2`; getting it wrong makes every odd block read back
+   the other plane's data. If two chips share `mfr`/`dev`, set each one's `dev2`
+   (the third ID byte) so the firmware can tell them apart; otherwise it refuses
+   to guess (`E_AMBIGUOUS_ID`).
 
-4. **Verify a dump**, then open a PR with the datasheet reference in `notes`.
+4. **Check it.** `python3 tools/chipdb.py` validates the whole database and
+   lists what the device will receive. `pio run -e esp32dev` regenerates
+   `src/nand_profiles_generated.h` from `db/` and compiles; a bad entry fails
+   the build with a message naming the chip and the field.
+
+5. **Verify a dump**, then open a PR.
+
+Have a v3 `chips.yml` with your own chips? Convert it once:
+`python3 tools/chips_yml_to_db.py chips.yml --profile micron`, then fill in each
+new file's `datasheet`.
 
 ## Running the tests
 
 ```bash
 pip install -r requirements-dev.txt
-python3 -m pytest        # host tools + wire-format cross-check
-pio test -e native       # pure C logic
+python3 -m pytest        # host tools, chip DB, wire-format cross-checks
+pio test -e native       # pure C logic, golden profile blobs, simulated NAND
 ```
 
 GitHub Actions (`.github/workflows/ci.yml`) runs the same checks on every pull
 request, plus firmware builds for `esp32dev` and `esp32-s3-devkitc-1` and a check
-that `src/nand_chips_generated.h` matches `chips.yml`.
+that `src/nand_profiles_generated.h` and the golden blobs match `db/`.
