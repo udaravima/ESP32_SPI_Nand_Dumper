@@ -9,6 +9,7 @@ Verified on the **Micron MT29F2G01** (2 Gbit, JEDEC `0x2C 0x24`). Adding another
 - **[Quick Start](docs/QUICKSTART.md)** — first dump in ~10 minutes.
 - **[User Guide](docs/USER_GUIDE.md)** — full operation: wiring, config menu, ECC modes, workflow, troubleshooting.
 - **[Developer Guide](docs/DEVELOPER_GUIDE.md)** — architecture, tests, wire protocol, adding a chip or board.
+- **[Hardware Test Plan](docs/hardware-test-plan.md)** — step-by-step bring-up on real chips, and what to report when something fails.
 - **[Contributing](CONTRIBUTING.md)** — add your chip to the registry.
 
 ## Features
